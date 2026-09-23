@@ -141,6 +141,17 @@ Built in slices, each independently useful.
 
 All four slices are implemented and each runs on its own.
 
+## Library use
+
+`oracle-core` is the library behind the subcommand, and every slice is usable on
+its own:
+
+```sh
+cargo doc -p oracle-core --open
+cargo run --example static_audit -- path/to/crate   # v0, no build required
+cargo run --example verdicts -- . mutants.out       # read an existing run
+```
+
 ## Documentation
 
 - [docs/design.md](docs/design.md) — why symbol identity is a definition span,

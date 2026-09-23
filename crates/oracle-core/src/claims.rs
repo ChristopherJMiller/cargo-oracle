@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// How a test came to speak for a symbol, ordered strongest first.
 pub enum ClaimKind {
     /// The doctest is attached to this exact item. Certain.
     Doctest,
@@ -37,6 +38,18 @@ pub enum ClaimKind {
 
 impl ClaimKind {
     /// How much weight to give this edge when a symbol has several.
+    ///
+    /// ```
+    /// use oracle_core::claims::ClaimKind;
+    ///
+    /// // A doctest is attached to its item: attribution is exact.
+    /// assert_eq!(ClaimKind::Doctest.confidence(), 1.0);
+    /// assert!(ClaimKind::Doctest.is_direct());
+    ///
+    /// // Every `pub` symbol is nominally in scope for an integration test,
+    /// // which makes that edge far too broad to hold anyone responsible.
+    /// assert!(!ClaimKind::IntegrationSurface.is_direct());
+    /// ```
     pub fn confidence(self) -> f32 {
         match self {
             ClaimKind::Doctest => 1.0,
@@ -54,18 +67,27 @@ impl ClaimKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// One edge: a test that has taken responsibility for a symbol.
 pub struct Claim {
+    /// The test making the claim.
     pub test: TestId,
+    /// The symbol claimed.
     pub symbol: SymbolId,
+    /// How the edge was established, which sets how much to trust it.
     pub kind: ClaimKind,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Every claim edge in a workspace.
 pub struct ClaimMap {
+    /// The edges, unordered.
     pub claims: Vec<Claim>,
 }
 
 impl ClaimMap {
+    /// Compute every claim edge in the inventory.
+    ///
+    /// Static and cheap: no build, no execution.
     pub fn build(inv: &Inventory) -> Self {
         let mut claims = Vec::new();
 

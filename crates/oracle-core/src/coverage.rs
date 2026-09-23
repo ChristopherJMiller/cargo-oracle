@@ -37,14 +37,18 @@ use std::process::Command;
 pub struct CoverageFunction {
     /// Mangled and monomorphized. Kept for diagnostics only — never joined on.
     pub name: String,
+    /// How many times this entry was executed.
     pub count: u64,
     /// Relative to the workspace root, matching `SymbolId::file`.
     pub file: String,
+    /// Start line of the entry's first region, which is what places it.
     pub start_line: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Every function entry in an llvm-cov export.
 pub struct CoverageData {
+    /// The entries, in report order.
     pub functions: Vec<CoverageFunction>,
 }
 
@@ -70,14 +74,18 @@ pub struct SymbolCoverage {
 }
 
 impl SymbolCoverage {
+    /// Whether any test reached this symbol.
     pub fn executed(&self) -> bool {
         self.execution_count > 0
     }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Coverage joined onto an inventory.
 pub struct CoverageMap {
+    /// Per-symbol execution evidence.
     pub symbols: BTreeMap<SymbolId, SymbolCoverage>,
+    /// Execution counts for inventoried test functions, which slice v2 builds on.
     pub tests: BTreeMap<TestId, u64>,
     /// Entries that matched no inventory span: macro expansions and derive
     /// output, which have no source definition of their own.
@@ -88,6 +96,7 @@ pub struct CoverageMap {
 }
 
 impl CoverageMap {
+    /// Place every coverage entry onto the inventory by span containment.
     pub fn join(inv: &Inventory, data: &CoverageData) -> Self {
         let mut map = CoverageMap::default();
 
@@ -174,10 +183,12 @@ impl CoverageMap {
         map
     }
 
+    /// Evidence for one symbol, defaulting to "never seen" when absent.
     pub fn for_symbol(&self, id: &SymbolId) -> SymbolCoverage {
         self.symbols.get(id).cloned().unwrap_or_default()
     }
 
+    /// Whether any test reached this symbol.
     pub fn executed(&self, id: &SymbolId) -> bool {
         self.symbols.get(id).is_some_and(|c| c.executed())
     }
@@ -218,6 +229,7 @@ pub fn load(path: &Path, workspace_root: &Path) -> Result<CoverageData> {
     parse(&text, workspace_root)
 }
 
+/// Parse an llvm-cov export from a string, normalizing paths against the root.
 pub fn parse(text: &str, workspace_root: &Path) -> Result<CoverageData> {
     let raw: RawExport =
         serde_json::from_str(text).context("parsing llvm-cov export JSON (expected `data[]`)")?;

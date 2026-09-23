@@ -24,6 +24,7 @@ use syn::spanned::Spanned;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Where a test lives, which decides how its claim is derived.
 pub enum TestKind {
     /// `#[test]` inside the crate, conventionally in a `#[cfg(test)] mod tests`.
     Unit,
@@ -38,7 +39,9 @@ pub enum TestKind {
 /// output so slice v2 can join per-test coverage profiles without a fuzzy match.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TestId {
+    /// Source file, relative to the workspace root.
     pub file: String,
+    /// 1-based line of the test function's name.
     pub line: u32,
     /// e.g. `mycrate::config::tests::rejects_empty_host`
     pub path: String,
@@ -46,6 +49,7 @@ pub struct TestId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Whether a `#[should_panic]` attribute names the panic it expects.
 pub enum ShouldPanic {
     /// `#[should_panic]` with no `expected = "..."`. Passes on *any* panic,
     /// including one raised by an unrelated bug on the way to the code under test.
@@ -55,12 +59,19 @@ pub enum ShouldPanic {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// One test, and everything needed to judge its oracles.
 pub struct TestItem {
+    /// How the test is addressed.
     pub id: TestId,
+    /// Unit, integration, or doctest.
     pub kind: TestKind,
+    /// Full extent of the test function.
     pub span: LineSpan,
+    /// `#[ignore]`: it does not run in a default `cargo test`.
     pub is_ignored: bool,
+    /// `async fn`, so it needs a runtime attribute to execute.
     pub is_async: bool,
+    /// The `#[should_panic]` attribute, if present, and whether it is qualified.
     pub should_panic: Option<ShouldPanic>,
     /// Module path of the enclosing `#[cfg(test)] mod`, when there is one. This
     /// is the claim edge Rust gives us for free: a test module lives *inside*
@@ -74,11 +85,14 @@ pub struct TestItem {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Every symbol and test in a workspace.
 pub struct Inventory {
     /// Absolute workspace root. Coverage reports use absolute paths; symbol
     /// IDs are relative to this, so the join needs it.
     pub root: String,
+    /// Testable symbols, sorted by definition site.
     pub symbols: Vec<Symbol>,
+    /// Tests, including doctests, sorted by definition site.
     pub tests: Vec<TestItem>,
     /// Source files parsed, relative to the workspace root.
     pub files: Vec<String>,
@@ -88,6 +102,7 @@ pub struct Inventory {
 }
 
 impl Inventory {
+    /// Look up a symbol by its ID.
     pub fn symbol(&self, id: &SymbolId) -> Option<&Symbol> {
         self.symbols.iter().find(|s| &s.id == id)
     }
@@ -107,6 +122,17 @@ enum FileRole {
     IntegrationTest,
 }
 
+/// Parse a Cargo workspace into an inventory.
+///
+/// Runs `cargo metadata` to find workspace members, then parses every `.rs`
+/// file under each package's `src/` and `tests/`. Directories with their own
+/// `Cargo.toml` are pruned, so a fixture crate nested inside `tests/` is not
+/// attributed to its host package.
+///
+/// # Errors
+///
+/// Fails if `cargo metadata` cannot run. Individual files that fail to parse
+/// are recorded in [`Inventory::parse_failures`] rather than aborting the walk.
 pub fn walk_workspace(manifest_dir: &Path) -> Result<Inventory> {
     let metadata = cargo_metadata::MetadataCommand::new()
         .current_dir(manifest_dir)

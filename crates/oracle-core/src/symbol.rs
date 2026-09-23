@@ -30,11 +30,25 @@ use std::fmt;
 pub struct SymbolId {
     /// Path relative to the workspace root, so IDs are stable across machines.
     pub file: String,
+    /// 1-based line of the symbol's *name* in its definition.
     pub line: u32,
+    /// 1-based column, matching `cargo-mutants` output.
     pub col: u32,
 }
 
 impl SymbolId {
+    /// Build an ID from a `proc-macro2` position.
+    ///
+    /// `proc-macro2` reports 0-based columns while `cargo-mutants` reports 1-based
+    /// ones; this adjusts so the two join without a fudge factor at the call site.
+    ///
+    /// ```
+    /// use oracle_core::symbol::SymbolId;
+    ///
+    /// let id = SymbolId::new("src/config.rs", 38, 4);
+    /// assert_eq!(id.col, 5);
+    /// assert_eq!(id.to_string(), "src/config.rs:38:5");
+    /// ```
     pub fn new(file: impl Into<String>, line: usize, zero_based_col: usize) -> Self {
         Self {
             file: file.into(),
@@ -54,11 +68,27 @@ impl fmt::Display for SymbolId {
 /// which coverage regions and which mutants belong to this symbol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineSpan {
+    /// First line of the definition, at the `fn` keyword.
     pub start: u32,
+    /// Last line, at the closing brace.
     pub end: u32,
 }
 
 impl LineSpan {
+    /// Whether `line` falls inside this span.
+    ///
+    /// This is the join primitive: every tool cargo-oracle reads reports
+    /// `file:line`, and containment places each report on a symbol without ever
+    /// comparing names.
+    ///
+    /// ```
+    /// use oracle_core::symbol::LineSpan;
+    ///
+    /// let span = LineSpan { start: 38, end: 42 };
+    /// assert!(span.contains(38), "inclusive at the start");
+    /// assert!(span.contains(42), "inclusive at the end");
+    /// assert!(!span.contains(37));
+    /// ```
     pub fn contains(&self, line: u32) -> bool {
         line >= self.start && line <= self.end
     }
@@ -66,6 +96,7 @@ impl LineSpan {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// What kind of item a symbol is.
 pub enum SymbolKind {
     /// A free function at module scope.
     Free,
@@ -94,6 +125,7 @@ pub enum SelfKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// The shape of a function's return type, as far as an oracle is concerned.
 pub enum ReturnShape {
     /// `-> ()` or no return type.
     Unit,
@@ -166,6 +198,10 @@ pub enum Triviality {
 }
 
 impl Triviality {
+    /// Whether this symbol carries enough behaviour to be worth scoring.
+    ///
+    /// Accessors and empty bodies are excluded: a mutant of
+    /// `fn name(&self) -> &str { &self.name }` is uncaught and unactionable.
     pub fn is_scorable(self) -> bool {
         matches!(self, Triviality::Normal)
     }
@@ -173,31 +209,47 @@ impl Triviality {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// How widely a symbol is reachable, which bounds who can claim it.
 pub enum Visibility {
+    /// `pub`.
     Public,
+    /// `pub(crate)`.
     Crate,
+    /// Private, or restricted to some module.
     Private,
 }
 
 /// One testable item in the crate under audit.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Symbol {
+    /// Where the symbol is defined; its identity.
     pub id: SymbolId,
     /// Display path, e.g. `mycrate::parser::Config::validate` or
     /// `mycrate::parser::<Config as Display>::fmt`.
     pub path: String,
     /// Bare name, for name-similarity claim matching.
     pub name: String,
+    /// Free function, inherent method, trait impl, or trait default body.
     pub kind: SymbolKind,
+    /// Full extent of the definition, used for containment joins.
     pub span: LineSpan,
+    /// Visibility as written on the item.
     pub visibility: Visibility,
+    /// The receiver, if any.
     pub self_kind: SelfKind,
+    /// The return type's shape.
     pub returns: ReturnShape,
+    /// Whether any argument is a `&mut` reference, which also implies post-state.
     pub has_mut_param: bool,
+    /// What a test must observe to detect a fault here. Derived, not declared.
     pub required_oracle: RequiredOracle,
+    /// Whether there is enough behaviour here to score.
     pub triviality: Triviality,
+    /// `async fn`.
     pub is_async: bool,
+    /// `const fn`. Cannot host a runtime mutation switch.
     pub is_const: bool,
+    /// `unsafe fn`.
     pub is_unsafe: bool,
     /// Trait being implemented, when `kind` is `TraitImpl`.
     pub trait_name: Option<String>,

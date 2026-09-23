@@ -38,6 +38,7 @@ use std::process::Command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// What happened when one mutant was tested.
 pub enum MutantOutcome {
     /// A test failed. The symbol is verified against this mutation.
     Caught,
@@ -66,7 +67,9 @@ impl MutantOutcome {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// One mutation cargo-mutants generated, and what came of it.
 pub struct Mutant {
+    /// Source file, relative to the workspace root.
     pub file: String,
     /// As cargo-mutants names it, e.g. `Config::set_retries`.
     pub function_name: String,
@@ -74,9 +77,13 @@ pub struct Mutant {
     /// is what we join on: it falls within the inventory's `LineSpan` for the
     /// enclosing symbol, the same containment used for coverage.
     pub line: u32,
+    /// 1-based column of the replaced span.
     pub column: u32,
+    /// What the body or operator was replaced with, e.g. `Ok(Default::default())`.
     pub replacement: String,
+    /// cargo-mutants' own category for the mutation, e.g. `FnValue`.
     pub genre: String,
+    /// Whether a test caught it.
     pub outcome: MutantOutcome,
     /// Tests observed failing in this mutant's log.
     pub killed_by: Vec<String>,
@@ -104,6 +111,7 @@ pub enum Verification {
 }
 
 impl Verification {
+    /// Short label for reports.
     pub fn label(self) -> &'static str {
         match self {
             Verification::Verified => "verified",
@@ -116,10 +124,15 @@ impl Verification {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Mutation evidence accumulated for one symbol.
 pub struct SymbolVerdict {
+    /// Mutants that some test caught.
     pub caught: usize,
+    /// Mutants that survived: nothing noticed the change.
     pub missed: usize,
+    /// Mutants that did not compile, so could not be scored either way.
     pub unviable: usize,
+    /// Timeouts and evaluation failures.
     pub other: usize,
     /// Tests seen killing a mutant of this symbol. Sufficient, not exhaustive.
     pub killed_by: BTreeSet<TestId>,
@@ -128,6 +141,27 @@ pub struct SymbolVerdict {
 }
 
 impl SymbolVerdict {
+    /// What this evidence supports.
+    ///
+    /// One caught mutant is enough to call a symbol verified; it does not mean
+    /// every mutant was caught, so [`SymbolVerdict::missed`] is still worth
+    /// reporting alongside.
+    ///
+    /// ```
+    /// use oracle_core::mutation::{SymbolVerdict, Verification};
+    ///
+    /// // One caught mutant is enough, even alongside survivors.
+    /// let mixed = SymbolVerdict { caught: 1, missed: 3, ..Default::default() };
+    /// assert_eq!(mixed.verification(), Verification::Verified);
+    ///
+    /// // Viable mutants that all survive: covered, and unverified.
+    /// let weak = SymbolVerdict { missed: 2, ..Default::default() };
+    /// assert_eq!(weak.verification(), Verification::PseudoTested);
+    ///
+    /// // A mutant that would not compile is not evidence of a missing test.
+    /// let uncompilable = SymbolVerdict { unviable: 2, ..Default::default() };
+    /// assert_eq!(uncompilable.verification(), Verification::NoViableMutant);
+    /// ```
     pub fn verification(&self) -> Verification {
         if self.caught > 0 {
             Verification::Verified
@@ -142,7 +176,9 @@ impl SymbolVerdict {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Mutation evidence joined onto an inventory.
 pub struct MutationMap {
+    /// Per-symbol evidence, for symbols the run examined.
     pub verdicts: BTreeMap<SymbolId, SymbolVerdict>,
     /// Every mutant cargo-mutants evaluated, including those landing on
     /// symbols the inventory does not score. The per-symbol counts below cover
@@ -159,6 +195,7 @@ pub struct MutationMap {
 }
 
 impl MutationMap {
+    /// Place every mutant onto the inventory by span containment.
     pub fn build(inv: &Inventory, mutants: &[Mutant]) -> Self {
         let mut map = MutationMap {
             total_mutants: mutants.len(),
@@ -219,6 +256,7 @@ impl MutationMap {
         map
     }
 
+    /// Evidence for one symbol, defaulting to empty when the run never saw it.
     pub fn verdict(&self, id: &SymbolId) -> SymbolVerdict {
         self.verdicts.get(id).cloned().unwrap_or_default()
     }
@@ -235,6 +273,10 @@ impl MutationMap {
         }
     }
 
+    /// Verdict for a symbol, ignoring whether the run examined its file.
+    ///
+    /// Prefer [`MutationMap::verification_in`], which distinguishes "examined and
+    /// found nothing" from "never looked".
     pub fn verification(&self, id: &SymbolId) -> Verification {
         self.verdicts
             .get(id)
@@ -359,6 +401,17 @@ pub fn load(out_dir: &Path) -> Result<Vec<Mutant>> {
 /// Handles nextest's `FAIL [ 0.00s] (1/4) <binary> <test>` summary lines and
 /// libtest's `test <name> ... FAILED`, falling back to the panicking thread
 /// name, which libtest and nextest both set to the test path.
+///
+/// ```
+/// use oracle_core::mutation::killers_from_log;
+///
+/// let log = "    Summary [ 0.01s] 4 tests run: 3 passed, 1 failed\n\
+///            FAIL [ 0.00s] (4/4) weak-suite config::tests::parses_host";
+/// assert_eq!(killers_from_log(log), vec!["config::tests::parses_host"]);
+///
+/// // A log with no failure names nobody, rather than guessing.
+/// assert!(killers_from_log("3 passed").is_empty());
+/// ```
 pub fn killers_from_log(log: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
 

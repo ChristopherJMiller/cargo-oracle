@@ -15,32 +15,50 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Workspace-level counts for the static audit.
 pub struct Summary {
+    /// Source files parsed.
     pub files: usize,
+    /// Every symbol inventoried, scorable or not.
     pub symbols_total: usize,
+    /// Symbols with enough behaviour to be worth scoring.
     pub symbols_scorable: usize,
+    /// Symbols skipped as accessors.
     pub symbols_accessor: usize,
+    /// Scorable symbols no test claims at all.
     pub symbols_unclaimed: usize,
+    /// Tests inventoried, doctests included.
     pub tests_total: usize,
+    /// Of which are doctests.
     pub doctests: usize,
+    /// How many tests fall at each oracle strength.
     pub strength: BTreeMap<OracleStrength, usize>,
+    /// Findings at high severity.
     pub findings_high: usize,
+    /// Findings at medium severity.
     pub findings_medium: usize,
+    /// Findings at low severity.
     pub findings_low: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// The v0 static audit: oracle findings and unclaimed symbols.
 pub struct Report {
+    /// Workspace-level counts.
     pub summary: Summary,
+    /// Per-test oracle verdicts.
     pub tests: Vec<TestOracles>,
+    /// Every finding, most severe first.
     pub findings: Vec<Finding>,
     /// Scorable symbols that no test claims, even weakly. A coverage proxy that
     /// needs no build: nothing nominally speaks for these at all.
     pub unclaimed: Vec<String>,
+    /// Files that could not be parsed, with the reason.
     pub parse_failures: BTreeMap<String, String>,
 }
 
 impl Report {
+    /// Run the static audit over an inventory.
     pub fn build(inv: &Inventory) -> Self {
         let claims = ClaimMap::build(inv);
         let mut tests = lint::analyze(inv);
@@ -116,10 +134,12 @@ impl Report {
             .filter(move |f| f.rule.severity() >= floor)
     }
 
+    /// Serialize the report as pretty-printed JSON.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("report is serializable")
     }
 
+    /// Render the report as text. `verbose` adds every test and each rule's rationale.
     pub fn to_text(&self, verbose: bool) -> String {
         let mut out = String::new();
         let s = &self.summary;
@@ -342,6 +362,10 @@ impl ExecutionState {
     }
 }
 
+/// Classify a symbol's execution state from coverage and claims.
+///
+/// Never returns a "verified" state: whether anything *checks* the symbol
+/// needs the mutation evidence of slice v3.
 pub fn execution_state(
     symbol: &Symbol,
     coverage: &CoverageMap,
@@ -364,6 +388,10 @@ pub fn execution_state(
     }
 }
 
+/// Render the v1 execution report.
+///
+/// `verbose` includes symbols that are simply executed, which are otherwise
+/// omitted so the gaps stand out.
 pub fn render_coverage(inv: &Inventory, coverage: &CoverageMap, verbose: bool) -> String {
     let claims = ClaimMap::build(inv);
     let mut out = String::new();
@@ -620,11 +648,19 @@ use crate::attribution::AttributionMap;
 /// costs one instrumented run per test instead of one rebuild per mutant.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReachWithoutDiscrimination {
+    /// The test in question.
     pub test: TestId,
+    /// How many symbols it executes.
     pub symbols_executed: usize,
+    /// Its strongest oracle.
     pub strength: OracleStrength,
 }
 
+/// Find tests that execute at least `min_symbols` and still have a weak or
+/// absent oracle, widest reach first.
+///
+/// Tests with no attribution data are skipped rather than counted as reaching
+/// nothing: never profiling a test is not evidence about it.
 pub fn reach_without_discrimination(
     attribution: &AttributionMap,
     oracles: &[TestOracles],
@@ -646,6 +682,7 @@ pub fn reach_without_discrimination(
     out
 }
 
+/// Render the v2 per-test attribution report.
 pub fn render_attribution(inv: &Inventory, attribution: &AttributionMap, verbose: bool) -> String {
     let claims = ClaimMap::build(inv);
     let oracles = lint::analyze(inv);

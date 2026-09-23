@@ -37,28 +37,55 @@ pub enum OracleStrength {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// An oracle-strength rule. See `docs/oracle-lints.md` for worked examples.
 pub enum Rule {
+    /// ORC001: nothing in the body can fail except a panic from the code under test.
     NoOracle,
+    /// ORC002: `is_ok()`/`is_some()` checks the discriminant and discards the payload.
     DiscriminantOnly,
+    /// ORC003: the only failure mode is a panic from `unwrap`, `expect` or `?`.
     UnwrapOnly,
+    /// ORC004: `matches!(x, V { .. })` wildcards every field.
     MatchesWildcard,
+    /// ORC005: `#[should_panic]` with no `expected`, so any panic passes.
     ShouldPanicUnqualified,
+    /// ORC006: `let _ = f();` runs `f` and observes nothing.
     DiscardedResult,
+    /// ORC007: both operands are the same expression, or the condition is a literal.
     TautologicalAssert,
+    /// ORC008: `#[ignore]`, so whatever it verifies is not verified.
     IgnoredTest,
+    /// ORC009: the expectation is computed by the function under test.
     ComputedExpectation,
+    /// ORC010: the claimed symbol mutates its receiver and no assertion observes it.
     OracleShapeMismatch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// How much a finding should weigh in a gate.
 pub enum Severity {
+    /// Worth knowing; not worth blocking on.
     Low,
+    /// A real weakness, usually fixable in one line.
     Medium,
+    /// The oracle cannot do its job at all.
     High,
 }
 
 impl Rule {
+    /// Stable identifier, e.g. `ORC002`.
+    ///
+    /// ```
+    /// use oracle_core::lint::{Rule, Severity};
+    ///
+    /// assert_eq!(Rule::DiscriminantOnly.id(), "ORC002");
+    /// assert_eq!(Rule::DiscriminantOnly.name(), "discriminant-only");
+    /// assert_eq!(Rule::DiscriminantOnly.severity(), Severity::High);
+    ///
+    /// // Every rule explains itself, so a report can say why.
+    /// assert!(Rule::OracleShapeMismatch.why().contains("post-state"));
+    /// ```
     pub fn id(self) -> &'static str {
         match self {
             Rule::NoOracle => "ORC001",
@@ -74,6 +101,7 @@ impl Rule {
         }
     }
 
+    /// Short kebab-case name, e.g. `discriminant-only`.
     pub fn name(self) -> &'static str {
         match self {
             Rule::NoOracle => "no-oracle",
@@ -89,6 +117,7 @@ impl Rule {
         }
     }
 
+    /// How much this finding should weigh in a `--deny` gate.
     pub fn severity(self) -> Severity {
         match self {
             Rule::NoOracle | Rule::TautologicalAssert | Rule::OracleShapeMismatch => Severity::High,
@@ -153,9 +182,13 @@ impl Rule {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// One rule firing at one place in one test.
 pub struct Finding {
+    /// Which rule fired.
     pub rule: Rule,
+    /// The test the finding belongs to.
     pub test: TestId,
+    /// 1-based line the finding points at.
     pub line: u32,
     /// The symbol this finding is about, when the rule is symbol-specific.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,17 +198,26 @@ pub struct Finding {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// One place in a test body where an oracle could fail.
 pub struct OracleSite {
+    /// 1-based line of the oracle.
     pub line: u32,
+    /// What the oracle is, e.g. `assert_eq!` or `.unwrap()`.
     pub kind: String,
+    /// How much this particular oracle can discriminate.
     pub strength: OracleStrength,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// The oracle verdict for one test.
 pub struct TestOracles {
+    /// The test analyzed.
     pub test: TestId,
+    /// The strongest oracle present. A test is judged by its best, not its average.
     pub strength: OracleStrength,
+    /// Every oracle found, in source order.
     pub sites: Vec<OracleSite>,
+    /// Every rule that fired.
     pub findings: Vec<Finding>,
     /// Method calls with a plain identifier receiver: `(receiver, method, line)`.
     /// Evidence for the post-state check; not part of the serialized report.
@@ -187,9 +229,16 @@ pub struct TestOracles {
 }
 
 #[derive(Clone, Debug)]
+/// A method call whose receiver is a plain identifier.
+///
+/// Evidence for ORC010: if a `&mut self` call's receiver never appears in an
+/// assertion, nothing observed the state the call existed to change.
 pub struct ReceiverCall {
+    /// The receiver's identifier.
     pub receiver: String,
+    /// The method called.
     pub method: String,
+    /// 1-based line of the call.
     pub line: u32,
 }
 
@@ -198,6 +247,10 @@ pub fn analyze(inv: &Inventory) -> Vec<TestOracles> {
     inv.tests.iter().map(analyze_test).collect()
 }
 
+/// Analyze one test's oracles.
+///
+/// A test whose body is `None` is reported as *unanalyzed* rather than as
+/// having no oracle, so an unparseable doctest does not become a finding.
 pub fn analyze_test(test: &TestItem) -> TestOracles {
     let mut scan = Scan {
         test: test.id.clone(),

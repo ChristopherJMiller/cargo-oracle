@@ -46,12 +46,23 @@ pub struct NextestId {
 
 impl NextestId {
     /// The filter expression that selects exactly this test.
+    ///
+    /// ```
+    /// use oracle_core::attribution::NextestId;
+    ///
+    /// let id = NextestId {
+    ///     binary_id: "weak-suite".into(),
+    ///     testcase: "config::tests::parses_host".into(),
+    /// };
+    /// assert_eq!(id.filter(), "test(=config::tests::parses_host)");
+    /// ```
     pub fn filter(&self) -> String {
         format!("test(={})", self.testcase)
     }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Which tests execute which symbols, in both directions.
 pub struct AttributionMap {
     /// symbol -> the tests that execute it.
     pub executed_by: BTreeMap<SymbolId, BTreeSet<TestId>>,
@@ -66,6 +77,7 @@ pub struct AttributionMap {
 }
 
 impl AttributionMap {
+    /// Tests that execute this symbol, if it was reached at all.
     pub fn tests_for(&self, symbol: &SymbolId) -> Option<&BTreeSet<TestId>> {
         self.executed_by.get(symbol)
     }
@@ -199,8 +211,12 @@ pub fn resolve(inv: &Inventory, test: &NextestId) -> Result<TestId, Ambiguity> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+/// Why a nextest name could not be resolved to one inventoried test.
 pub enum Ambiguity {
+    /// No inventoried test matched the name.
     None,
+    /// Several matched. The edge is dropped rather than guessed, because a wrong
+    /// attribution credits a test with reaching code it never touched.
     Several(usize),
 }
 
