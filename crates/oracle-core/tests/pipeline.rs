@@ -422,3 +422,55 @@ fn a_signature_with_no_mutant_is_unscorable_rather_than_unverified() {
         Verification::NotMutated
     );
 }
+
+// ---------------------------------------------------------------------------
+// Report rendering: the output is the product, so its shape is tested too
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_rendered_report_accounts_for_every_test_it_does_not_show() {
+    use oracle_core::report::Report;
+
+    let inv = fixture();
+    let text = Report::build(&inv).to_text(false);
+
+    // The fixture has five tests; two have a strong oracle and no findings, so
+    // the detail section lists three. A reader who sees "5 tests" in the header
+    // and counts three below must be told why, or the report reads as a bug.
+    assert!(
+        text.contains("3 of 5 tests"),
+        "the count of flagged tests must be stated: {text}"
+    );
+    assert!(
+        text.contains("2 tests not shown"),
+        "the tests omitted must be accounted for: {text}"
+    );
+}
+
+#[test]
+fn findings_name_the_rule_not_only_its_code() {
+    use oracle_core::report::Report;
+
+    let inv = fixture();
+    let text = Report::build(&inv).to_text(false);
+
+    // `ORC002` alone tells a first-time reader nothing. The name carries the
+    // meaning and the code is for filtering and `explain`.
+    assert!(text.contains("discriminant-only (ORC002)"), "{text}");
+    assert!(text.contains("oracle-shape-mismatch (ORC010)"), "{text}");
+}
+
+#[test]
+fn a_clean_report_says_so_rather_than_printing_an_empty_section() {
+    use oracle_core::claims::ClaimMap;
+    use oracle_core::report::Report;
+
+    let inv = fixture();
+    let report = Report::build(&inv);
+    let text = report.to_text(false);
+
+    // Every scorable symbol in the fixture is claimed, so the report should
+    // state that outright instead of leaving a bare heading.
+    assert!(ClaimMap::build(&inv).unclaimed(&inv, false).is_empty());
+    assert!(text.contains("Every scorable symbol is claimed"), "{text}");
+}

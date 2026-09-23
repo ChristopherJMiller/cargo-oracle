@@ -139,20 +139,23 @@ impl Report {
         serde_json::to_string_pretty(self).expect("report is serializable")
     }
 
-    /// Render the report as text. `verbose` adds every test and each rule's rationale.
+    /// Render the report as text.
+    ///
+    /// Organized around the *test*, because a test is what a reader fixes.
+    /// An earlier version printed findings grouped by file and then a separate
+    /// per-test strength table, which said the same thing twice and left the
+    /// reader to join them by eye.
     pub fn to_text(&self, verbose: bool) -> String {
         let mut out = String::new();
         let s = &self.summary;
 
         let _ = writeln!(
             out,
-            "cargo-oracle  static audit (v0)\n  {} files, {} symbols ({} scorable, {} skipped), {} tests ({} doctests)\n",
-            s.files,
-            s.symbols_total,
-            s.symbols_scorable,
-            plural(s.symbols_accessor, "accessor"),
-            s.tests_total,
-            s.doctests
+            "cargo-oracle  static audit\n\n  {}, {}, {} ({})\n",
+            plural(s.files, "file"),
+            plural(s.symbols_scorable, "scorable symbol"),
+            plural(s.tests_total, "test"),
+            plural(s.doctests, "doctest"),
         );
 
         if !self.parse_failures.is_empty() {
@@ -163,116 +166,123 @@ impl Report {
             out.push('\n');
         }
 
-        // Findings, grouped by the file they live in.
-        if self.findings.is_empty() {
-            let _ = writeln!(out, "no findings.\n");
-        } else {
-            let mut by_file: BTreeMap<&str, Vec<&Finding>> = BTreeMap::new();
-            for f in &self.findings {
-                by_file.entry(f.test.file.as_str()).or_default().push(f);
-            }
-            for (file, group) in by_file {
-                let _ = writeln!(out, "{file}");
-                for f in group {
-                    let sev = match f.rule.severity() {
-                        Severity::High => "high",
-                        Severity::Medium => "med ",
-                        Severity::Low => "low ",
-                    };
-                    let _ = writeln!(
-                        out,
-                        "  {}:{:<5} {} {:<24} {}",
-                        sev,
-                        f.line,
-                        f.rule.id(),
-                        f.rule.name(),
-                        leaf(&f.test.path)
-                    );
-                    if let Some(symbol) = &f.symbol {
-                        let _ = writeln!(out, "         on {symbol}");
-                    }
-                    if !f.snippet.is_empty() {
-                        let _ = writeln!(out, "         {}", truncate(&f.snippet, 96));
-                    }
-                    if verbose {
-                        let _ = writeln!(out, "         {}", wrap(f.rule.why(), 9, 78));
-                    }
-                }
-                out.push('\n');
-            }
-        }
-
-        // Per-test verdict: the inversion that makes a weak new test visible
-        // instead of averaging it away into a file-level number.
-        let _ = writeln!(out, "per-test oracle strength");
+        // Worst oracles first, then most findings: the order a reader would
+        // want to work through them.
         let mut tests: Vec<&TestOracles> = self.tests.iter().collect();
         tests.sort_by(|a, b| {
             a.strength
                 .cmp(&b.strength)
+                .then(b.findings.len().cmp(&a.findings.len()))
                 .then(a.test.path.cmp(&b.test.path))
         });
-        for t in tests {
-            if !verbose && t.strength >= OracleStrength::Partial && t.findings.is_empty() {
-                continue;
-            }
-            let rules: Vec<&str> = t.findings.iter().map(|f| f.rule.id()).collect();
+
+        let flagged: Vec<&&TestOracles> = tests.iter().filter(|t| !t.findings.is_empty()).collect();
+        let shown: Vec<&&TestOracles> = if verbose {
+            tests.iter().collect()
+        } else {
+            flagged.clone()
+        };
+
+        if flagged.is_empty() {
+            let _ = writeln!(out, "No test has an oracle that cannot discriminate.\n");
+        } else {
             let _ = writeln!(
                 out,
-                "  {:<8} {:<58} {}",
-                format!("{:?}", t.strength).to_lowercase(),
-                truncate(&t.test.path, 58),
-                rules.join(" ")
+                "{} of {} tests have an oracle that cannot discriminate:\n",
+                flagged.len(),
+                s.tests_total
             );
         }
 
-        if !self.unclaimed.is_empty() {
+        let locations: Vec<String> = shown
+            .iter()
+            .map(|t| format!("{}:{}", t.test.file, t.test.line))
+            .collect();
+        // Pad to the widest location actually present, capped, so short paths
+        // do not leave a corridor of whitespace.
+        let loc_width = locations.iter().map(String::len).max().unwrap_or(0).min(48);
+
+        for (t, location) in shown.iter().zip(&locations) {
             let _ = writeln!(
                 out,
-                "\nunclaimed symbols ({}) -- no test speaks for these at all",
-                self.unclaimed.len()
+                "  {:<loc_width$}  {:<26} {}",
+                location,
+                truncate(leaf(&t.test.path), 26),
+                strength_label(t.strength)
             );
-            for path in self
-                .unclaimed
-                .iter()
-                .take(if verbose { usize::MAX } else { 15 })
-            {
+
+            for f in &t.findings {
+                let _ = writeln!(
+                    out,
+                    "      {:<6} {} ({})",
+                    severity_label(f.rule.severity()),
+                    f.rule.name(),
+                    f.rule.id()
+                );
+                if let Some(symbol) = &f.symbol {
+                    let _ = writeln!(out, "             on {symbol}");
+                }
+                if !f.snippet.is_empty() {
+                    let _ = writeln!(out, "             {}", truncate(&f.snippet, 88));
+                }
+                if verbose {
+                    let _ = writeln!(out, "             {}", wrap(f.rule.why(), 13, 76));
+                }
+            }
+            out.push('\n');
+        }
+
+        // Never let the reader wonder why the counts do not add up.
+        let hidden = s.tests_total.saturating_sub(shown.len());
+        if hidden > 0 {
+            let _ = writeln!(
+                out,
+                "  {} not shown: no findings. Use -v to list every test.\n",
+                plural(hidden, "test")
+            );
+        }
+
+        if self.unclaimed.is_empty() {
+            let _ = writeln!(
+                out,
+                "Every scorable symbol is claimed by at least one test.\n"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "{} that no test claims at all:",
+                plural(self.unclaimed.len(), "scorable symbol")
+            );
+            let limit = if verbose { usize::MAX } else { 10 };
+            for path in self.unclaimed.iter().take(limit) {
                 let _ = writeln!(out, "  {path}");
             }
-            if !verbose && self.unclaimed.len() > 15 {
-                let _ = writeln!(out, "  ... and {} more", self.unclaimed.len() - 15);
+            if self.unclaimed.len() > limit {
+                let _ = writeln!(
+                    out,
+                    "  ... and {} more (-v for all)",
+                    self.unclaimed.len() - limit
+                );
             }
+            out.push('\n');
         }
 
-        let strength_line: Vec<String> = [
-            OracleStrength::Strong,
-            OracleStrength::Partial,
-            OracleStrength::Weak,
-            OracleStrength::None,
-        ]
-        .iter()
-        .map(|k| {
-            format!(
-                "{} {}",
-                format!("{k:?}").to_lowercase(),
-                s.strength.get(k).copied().unwrap_or(0)
-            )
-        })
-        .collect();
-
+        let strength_of = |k: OracleStrength| s.strength.get(&k).copied().unwrap_or(0);
         let _ = writeln!(
             out,
-            "\nsummary\n  oracle strength   {}\n  findings          {} high, {} medium, {} low\n  unclaimed         {} of {} scorable symbols",
-            strength_line.join("   "),
+            "summary\n  oracle strength   {} strong, {} partial, {} weak, {} with none\n  findings          {} high, {} medium, {} low",
+            strength_of(OracleStrength::Strong),
+            strength_of(OracleStrength::Partial),
+            strength_of(OracleStrength::Weak),
+            strength_of(OracleStrength::None),
             s.findings_high,
             s.findings_medium,
-            s.findings_low,
-            s.symbols_unclaimed,
-            s.symbols_scorable
+            s.findings_low
         );
 
         let _ = writeln!(
             out,
-            "\nthis is a static audit: it reports oracles that cannot discriminate and\nsymbols nobody claims. whether a symbol is actually *verified* needs the\nmutation evidence of `cargo oracle verify` (slice v3)."
+            "\nwhat next\n  cargo oracle explain ORC001   what a rule means and how to fix it\n  cargo oracle verify           whether these tests actually catch bugs\n\nthis audit is static: it finds oracles that *cannot* fail. Whether the ones\nthat can would actually catch a bug needs `verify`."
         );
 
         out
@@ -1049,4 +1059,25 @@ pub fn render_verification(
         "\nnextest stops at the first failure, so a killer named here is sufficient,\nnot exhaustive: other tests may also catch the same mutant."
     );
     out
+}
+
+/// Word for an oracle strength, as it reads in a report.
+///
+/// `Debug` would render `None` as "none", which in a column beside test names
+/// reads as a missing value rather than as the finding it is.
+fn strength_label(strength: OracleStrength) -> &'static str {
+    match strength {
+        OracleStrength::None => "no oracle",
+        OracleStrength::Weak => "weak",
+        OracleStrength::Partial => "partial",
+        OracleStrength::Strong => "strong",
+    }
+}
+
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::High => "high",
+        Severity::Medium => "medium",
+        Severity::Low => "low",
+    }
 }

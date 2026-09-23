@@ -11,7 +11,7 @@ use oracle_core::claims::ClaimMap;
 use oracle_core::coverage::{self, CoverageMap};
 use oracle_core::fastmutate::{self, FastOutcome, Plan};
 use oracle_core::inventory::walk_workspace;
-use oracle_core::lint::Severity;
+use oracle_core::lint::{Rule, Severity};
 use oracle_core::mutation::{self, MutationMap};
 use oracle_core::report::{self, Report};
 use std::ffi::OsString;
@@ -129,6 +129,14 @@ enum Command {
         /// built alongside this binary.
         #[arg(long, value_name = "DIR")]
         switch_path: Option<PathBuf>,
+    },
+    /// Explain a lint rule: what it means, why it matters, how to fix it.
+    ///
+    /// With no argument, lists every rule.
+    Explain {
+        /// Rule id (`ORC002`) or name (`discriminant-only`).
+        #[arg(value_name = "RULE")]
+        rule: Option<String>,
     },
     /// The full audit: inventory, claims, and oracle findings.
     Report {
@@ -458,6 +466,36 @@ fn main() -> Result<()> {
             0
         }
 
+        Command::Explain { rule } => {
+            let Some(needle) = rule else {
+                println!("{:<9} {:<26} SEVERITY", "ID", "NAME");
+                for r in Rule::ALL {
+                    println!(
+                        "{:<9} {:<26} {}",
+                        r.id(),
+                        r.name(),
+                        format!("{:?}", r.severity()).to_lowercase()
+                    );
+                }
+                println!("\ncargo oracle explain <ID|NAME>   for detail on one rule");
+                return Ok(());
+            };
+
+            let Some(r) = Rule::find(&needle) else {
+                anyhow::bail!("no rule `{needle}`. Run `cargo oracle explain` to list them all.");
+            };
+
+            println!(
+                "{}  {}   severity: {}\n",
+                r.id(),
+                r.name(),
+                format!("{:?}", r.severity()).to_lowercase()
+            );
+            println!("why it matters\n  {}\n", wrap_text(r.why(), 2, 76));
+            println!("how to fix it\n  {}", wrap_text(r.fix(), 2, 76));
+            0
+        }
+
         Command::Claims => {
             let claims = ClaimMap::build(&inventory);
             match cli.format {
@@ -525,4 +563,24 @@ fn truncate(s: &str, max: usize) -> String {
     }
     let kept: String = s.chars().take(max.saturating_sub(1)).collect();
     format!("{kept}~")
+}
+
+/// Wrap prose to `width`, indenting continuation lines by `indent`.
+fn wrap_text(text: &str, indent: usize, width: usize) -> String {
+    let pad = " ".repeat(indent);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.len() + word.len() + 1 > width - indent {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines.join(&format!("\n{pad}"))
 }

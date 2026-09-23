@@ -19,38 +19,59 @@ not the question. Whether it can fail is.
 ```
 $ cargo oracle lint
 
-cargo-oracle  static audit (v0)
-  2 files, 5 symbols (4 scorable, 1 accessor skipped), 5 tests (1 doctests)
+cargo-oracle  static audit
 
-src/config.rs
-  high:50    ORC002 discriminant-only        test_parse
-         parse("h:1").is_ok()
-  high:54    ORC001 no-oracle                test_validate
-  high:62    ORC010 oracle-shape-mismatch    test_set_retries
-         on weak_suite::config::Config::set_retries
-         `c.set_retries(..)` mutates `c`, which no assertion observes
-  high:63    ORC007 tautological-assert      test_set_retries
-         true
+  2 files, 5 scorable symbols, 5 tests (1 doctest)
 
-per-test oracle strength
-  none     weak_suite::config::tests::test_set_retries    ORC007 ORC010
-  none     weak_suite::config::tests::test_validate       ORC001
-  weak     weak_suite::config::tests::test_parse          ORC002
+3 of 5 tests have an oracle that cannot discriminate:
+
+  src/config.rs:70  test_set_retries           no oracle
+      high   tautological-assert (ORC007)
+             assert!(true)
+      high   oracle-shape-mismatch (ORC010)
+             on weak_suite::config::Config::set_retries
+             `c.set_retries(..)` mutates `c`, which no assertion observes
+
+  src/config.rs:64  test_validate              no oracle
+      high   no-oracle (ORC001)
+
+  src/config.rs:59  test_parse                 weak
+      high   discriminant-only (ORC002)
+             assert!(parse("h:1").is_ok())
+
+  2 tests not shown: no findings. Use -v to list every test.
 
 summary
-  oracle strength   strong 2   partial 0   weak 1   none 2
+  oracle strength   2 strong, 0 partial, 1 weak, 2 with none
   findings          4 high, 0 medium, 0 low
-  unclaimed         0 of 4 scorable symbols
 ```
 
-The report leads with the **per-test** verdict. Every other tool aggregates to
-file or project, which is exactly the granularity at which one weak new test
-disappears into a healthy average.
+The report is organized around the **test**, because a test is what you fix.
+Every count reconciles: if five tests exist and three are listed, the report
+says where the other two went.
 
 `ORC010` is the finding you cannot get anywhere else. Rust puts effects in
 types, so `fn set_retries(&mut self, n: u8)` announces that its result lives in
 the receiver — and a test that calls it and never mentions `c` again is
 *structurally* blind to it, no matter how many assertions it has.
+
+Any rule will explain itself:
+
+```
+$ cargo oracle explain ORC010
+
+ORC010  oracle-shape-mismatch   severity: high
+
+why it matters
+  The claimed symbol mutates its receiver, but no assertion observes that
+  receiver after the call. The required oracle is post-state; the test only
+  has return-value oracles.
+
+how to fix it
+  Assert on the receiver after the call: `obj.mutate();
+  assert_eq!(obj.field, expected);` -- or compare the whole value if it
+  derives PartialEq.
+```
 
 ### And what v3 says, with evidence
 
@@ -109,6 +130,7 @@ nix develop                       # rustc, cargo-nextest, cargo-llvm-cov, cargo-
 cargo build --release
 
 cargo oracle lint                 # static oracle audit (no build, no test run)
+cargo oracle explain ORC010       # what a rule means and how to fix it
 cargo oracle lint --deny high     # exit 1 on any high-severity finding, for CI
 cargo oracle inventory            # symbols and the oracle shape each requires
 cargo oracle claims               # which tests speak for which symbols

@@ -74,6 +74,88 @@ pub enum Severity {
 }
 
 impl Rule {
+    /// Every rule, in id order.
+    pub const ALL: [Rule; 10] = [
+        Rule::NoOracle,
+        Rule::DiscriminantOnly,
+        Rule::UnwrapOnly,
+        Rule::MatchesWildcard,
+        Rule::ShouldPanicUnqualified,
+        Rule::DiscardedResult,
+        Rule::TautologicalAssert,
+        Rule::IgnoredTest,
+        Rule::ComputedExpectation,
+        Rule::OracleShapeMismatch,
+    ];
+
+    /// Look a rule up by id (`ORC002`) or name (`discriminant-only`), ignoring
+    /// case.
+    ///
+    /// ```
+    /// use oracle_core::lint::Rule;
+    ///
+    /// assert_eq!(Rule::find("ORC002"), Some(Rule::DiscriminantOnly));
+    /// assert_eq!(Rule::find("orc002"), Some(Rule::DiscriminantOnly));
+    /// assert_eq!(Rule::find("discriminant-only"), Some(Rule::DiscriminantOnly));
+    /// assert_eq!(Rule::find("nope"), None);
+    /// ```
+    pub fn find(needle: &str) -> Option<Rule> {
+        let needle = needle.trim().to_ascii_lowercase();
+        Rule::ALL
+            .into_iter()
+            .find(|r| r.id().to_ascii_lowercase() == needle || r.name() == needle)
+    }
+
+    /// What to do about it.
+    ///
+    /// `why` explains the problem; this says how to make the oracle able to
+    /// fail. A finding without a fix is a complaint.
+    pub fn fix(self) -> &'static str {
+        match self {
+            Rule::NoOracle => {
+                "Assert on what the call produced. If it returns a value, compare it to an \
+                 expected one; if it mutates a receiver, assert on the receiver afterwards."
+            }
+            Rule::DiscriminantOnly => {
+                "Unwrap and assert on the payload: `assert_eq!(parse(s).unwrap().port, 8080)` \
+                 rather than `assert!(parse(s).is_ok())`."
+            }
+            Rule::UnwrapOnly => {
+                "Keep the unwrap for convenience, then assert something about the value it \
+                 produced."
+            }
+            Rule::MatchesWildcard => {
+                "Bind the fields you care about and check them: \
+                 `assert!(matches!(e, Error::Parse(m) if m.contains(\"port\")))`, or compare \
+                 the whole value with `assert_eq!`."
+            }
+            Rule::ShouldPanicUnqualified => {
+                "Add `expected = \"...\"` naming the panic message, so an unrelated panic \
+                 on the way in no longer passes the test."
+            }
+            Rule::DiscardedResult => {
+                "Bind the result and assert on it, or delete the call if it is only there \
+                 for coverage."
+            }
+            Rule::TautologicalAssert => {
+                "Replace one side with an independently written expected value. If there is \
+                 nothing to compare against, the test has no subject."
+            }
+            Rule::IgnoredTest => {
+                "Fix and re-enable it, or delete it. An ignored test is documentation that \
+                 looks like coverage."
+            }
+            Rule::ComputedExpectation => {
+                "Write the expected value out as a literal or constructor instead of \
+                 computing it with the function under test."
+            }
+            Rule::OracleShapeMismatch => {
+                "Assert on the receiver after the call: `obj.mutate(); assert_eq!(obj.field, \
+                 expected);` -- or compare the whole value if it derives PartialEq."
+            }
+        }
+    }
+
     /// Stable identifier, e.g. `ORC002`.
     ///
     /// ```
@@ -388,7 +470,7 @@ impl Scan {
         let args = parse_args(mac);
 
         let strength = match name {
-            "assert" | "debug_assert" => self.classify_condition(args.first(), line),
+            "assert" | "debug_assert" => self.classify_condition(args.first(), line, name),
             "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => {
                 self.classify_equality(&args, line, mac)
             }
@@ -416,11 +498,18 @@ impl Scan {
     }
 
     /// `assert!(cond)` — everything depends on what `cond` is.
-    fn classify_condition(&mut self, cond: Option<&syn::Expr>, line: u32) -> OracleStrength {
+    fn classify_condition(
+        &mut self,
+        cond: Option<&syn::Expr>,
+        line: u32,
+        macro_name: &str,
+    ) -> OracleStrength {
         let Some(cond) = cond else {
             return OracleStrength::Weak;
         };
-        let text = render(cond);
+        // Quote the whole assertion: a snippet reading just `true` does not
+        // look like a problem until you know it was an `assert!`.
+        let text = format!("{macro_name}!({})", render(cond));
 
         match cond {
             // `assert!(true)` and friends.
@@ -466,7 +555,7 @@ impl Scan {
                 OracleStrength::Strong
             }
 
-            syn::Expr::Unary(u) => self.classify_condition(Some(&u.expr), line),
+            syn::Expr::Unary(u) => self.classify_condition(Some(&u.expr), line, macro_name),
 
             _ => OracleStrength::Partial,
         }
@@ -836,6 +925,17 @@ mod tests {
     }
 
     #[test]
+    fn a_flagged_snippet_quotes_the_whole_assertion_not_just_its_condition() {
+        // A snippet reading `true` does not look like a problem in a report
+        // until you know it was the argument to an `assert!`.
+        let o = analyze_src("fn t() { assert!(true); }");
+        assert_eq!(o.findings[0].snippet, "assert!(true)");
+
+        let o = analyze_src(r#"fn t() { assert!(parse("h:1").is_ok()); }"#);
+        assert_eq!(o.findings[0].snippet, r#"assert!(parse("h:1").is_ok())"#);
+    }
+
+    #[test]
     fn identical_operands_are_tautological() {
         let o = analyze_src("fn t() { assert_eq!(cfg.len(), cfg.len()); }");
         assert_eq!(rules(&o), vec![Rule::TautologicalAssert]);
@@ -975,18 +1075,7 @@ mod tests {
 
     #[test]
     fn every_rule_has_a_distinct_id_and_an_explanation() {
-        let all = [
-            Rule::NoOracle,
-            Rule::DiscriminantOnly,
-            Rule::UnwrapOnly,
-            Rule::MatchesWildcard,
-            Rule::ShouldPanicUnqualified,
-            Rule::DiscardedResult,
-            Rule::TautologicalAssert,
-            Rule::IgnoredTest,
-            Rule::ComputedExpectation,
-            Rule::OracleShapeMismatch,
-        ];
+        let all = Rule::ALL;
         let mut ids: Vec<&str> = all.iter().map(|r| r.id()).collect();
         let before = ids.len();
         ids.sort();
@@ -994,5 +1083,16 @@ mod tests {
         assert_eq!(ids.len(), before, "rule IDs must be unique");
         assert!(all.iter().all(|r| r.why().len() > 40));
         assert!(all.iter().all(|r| !r.name().is_empty()));
+        // Every rule must say how to fix it. A finding without a fix is a
+        // complaint, and `cargo oracle explain` would have nothing to print.
+        assert!(
+            all.iter().all(|r| r.fix().len() > 40),
+            "every rule needs a fix"
+        );
+        // Every rule is reachable by both of the names a reader might type.
+        for rule in all {
+            assert_eq!(Rule::find(rule.id()), Some(rule));
+            assert_eq!(Rule::find(rule.name()), Some(rule));
+        }
     }
 }
