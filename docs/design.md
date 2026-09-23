@@ -32,8 +32,8 @@ the symbol identity that v0 establishes.
 | **v2** attribution | Which *test* runs which symbol? | `cargo-nextest`, one profile per test | N profiles + merges |
 | **v3** verification | Which test *fails* when the symbol's body is destroyed? | `cargo-mutants` | one rebuild per mutant |
 
-v0, v1 and v2 are implemented. v3 is sketched below so the data model does
-not have to change to accept them.
+All four slices are implemented. The sections below record the decisions that
+were expensive to get right.
 
 ## Symbol identity is a span, not a name
 
@@ -70,7 +70,8 @@ hands us 0-based columns and `SymbolId::new` adjusts.
 | `executed` | Runs. Whether anything *checks* it is a separate question | v1 |
 | `pseudo-tested` | Runs, but destroying its body fails no test | v3 |
 | `verified` | A named test fails when the body is destroyed | v3 |
-| `no viable mutant` | Cannot be scored by body replacement | v0 predicts, v3 confirms |
+| `no viable mutant` | Mutant would not compile | v0 predicts, v3 confirms |
+| `not mutated` | No mutant exists for the signature at all | v3 |
 
 `claimed, not run` is worth separating from plain `unexecuted`. Both are
 uncovered, but in the first case someone took responsibility for the symbol —
@@ -199,6 +200,93 @@ Two more views fall out of the edge set for free:
 - **Executed by no test** — an exact, per-symbol version of the v1 gap.
 - **Executed by exactly one test** — a single point of failure. If that test is
   deleted or skipped, the symbol silently becomes unexercised.
+
+## Slice v3: mutation verification
+
+The slice the other three exist to reach. v1 says a symbol ran; v2 says which
+test ran it; only v3 says whether anything would *notice it breaking*.
+
+`cargo-mutants` replaces a function body with a type-appropriate default
+(`Ok(Default::default())`, `()`, `""`, `0`). That is **extreme mutation** — the
+same operator Descartes implements for Java to find pseudo-tested methods — and
+in Rust it is the default behaviour of the mainstream tool rather than a bolt-on
+engine. The reasoning is that if no test notices the entire body vanishing, no
+test will notice a subtler fault either.
+
+### The join, again by span
+
+cargo-mutants reports each mutant's replaced span as `file:line:col`, and that
+span lies *inside* the enclosing function body. So the same containment rule
+used for coverage places it: the innermost inventory `LineSpan` containing the
+mutant's line owns it. A mutant inside a closure is attributed to the function
+defining the closure, which is what we want.
+
+Note that cargo-mutants' own `function.span.start` includes doc comments and
+attributes, so it does **not** equal our `fn`-line start. Joining on the mutant
+span rather than the function span sidesteps that entirely.
+
+### Attributing the kill to a test
+
+The per-mutant log under `mutants.out/log/` carries the test-run output, and
+nextest's summary line names the failure:
+
+```
+FAIL [   0.006s] (4/4) weak-suite config::tests::parse_extracts_host_and_port
+```
+
+Parsed alongside libtest's `test <name> ... FAILED`, with the panicking thread
+name as a fallback. Names resolve to inventoried tests by the same strict suffix
+rule v2 uses; an ambiguous name is dropped rather than guessed.
+
+**nextest cancels the run at the first failure**, so the log names *a* test that
+killed the mutant, not every test that would have. `verified by X` means "X is
+sufficient", never "X is the only one". Passing `--no-fail-fast` through lifts
+this at proportional cost.
+
+### Three ways to be unscorable, and none of them mean "verified"
+
+This is where an audit tool earns or loses its credibility, because every one of
+these is a place where a gap could be laundered into a reassurance:
+
+| State | Cause | What it does *not* mean |
+|---|---|---|
+| `PSEUDO-TESTED` | Viable mutants, all survived | — this is a real finding |
+| `no viable mutant` | Mutant did not compile | Not "type-enforced". Partly the type system, partly our operator being weak |
+| `not mutated` | cargo-mutants generated nothing | **Unscorable, not unverified** |
+
+The last one is not hypothetical. In the fixture crate, `Config::new` returns
+`Self` and cargo-mutants produces no mutant for it at all — body replacement has
+no default to substitute. The constructor is in fact well tested; the tool
+simply cannot score it. Reporting that as anything other than "unscorable" would
+be a lie of omission.
+
+For the same reason the summary reports two mutant counts: those landing on
+scorable symbols, and the total the run generated.
+
+### The two things only v3 can say
+
+**Per-test verdict.** Combining v2's attribution edges with v3's kill
+attribution gives the direct answer to the question this tool exists for:
+
+```
+TEST                                     EXECUTES  VERIFIES
+weak_suite::config::tests::test_parse           2         0  <- runs code, verifies none of it
+weak_suite::config::tests::test_validate        2         0  <- runs code, verifies none of it
+parse_extracts_host_and_port                    2         1
+```
+
+**Confirmation of the static rules.** Where ORC010 predicted statically that a
+symbol could not be verified, v3 reports whether it was right:
+
+```
+Config::set_retries   PSEUDO-TESTED   1 mutant survived: ()
+                      ^ predicted by ORC010 -- `c.set_retries(..)` mutates `c`, which no assertion observes
+```
+
+That line is the argument for the whole layered design. The v0 rule costs
+milliseconds and no build; the v3 evidence costs a rebuild per mutant. When the
+cheap check calls it correctly, it can be run on every commit and the expensive
+one reserved for the diff.
 
 ## The claim map
 

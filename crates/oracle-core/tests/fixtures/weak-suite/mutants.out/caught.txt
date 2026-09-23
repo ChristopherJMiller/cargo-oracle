@@ -1,0 +1,1 @@
+src/config.rs:39:5: replace parse -> Result<Config, String> with Ok(Default::default())

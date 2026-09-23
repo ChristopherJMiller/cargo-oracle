@@ -1,0 +1,82 @@
+
+*** src/config.rs:21:9: replace Config::host -> &str with "xyzzy"
+
+*** mutation diff:
+--- src/config.rs
++++ replace Config::host -> &str with "xyzzy"
+@@ -13,17 +13,17 @@
+     /// assert_eq!(c.port, 1);
+     /// ```
+     pub fn new(host: &str, port: u16) -> Self {
+         Self { host: host.to_string(), port, retries: 0 }
+     }
+ 
+     /// An accessor: nothing to destroy, so it should not be scored.
+     pub fn host(&self) -> &str {
+-        &self.host
++        "xyzzy" /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Mutates the receiver and returns nothing: the required oracle is
+     /// post-state, and a return-value assertion cannot reach it.
+     pub fn set_retries(&mut self, n: u8) {
+         self.retries = n.min(10);
+     }
+ 
+
+
+*** /nix/store/w20n3pmhhd1av9llykxa3gd21c9jsm8l-cargo-1.98.1/bin/cargo nextest run --no-run --verbose --package=weak-suite@0.0.0
+   Compiling weak-suite v0.0.0 (/tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp)
+warning: unused `Result` that must be used
+  --> src/config.rs:66:9
+   |
+66 |         c.validate();
+   |         ^^^^^^^^^^^^
+   |
+   = note: this `Result` may be an `Err` variant, which should be handled
+   = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+   |
+66 |         let _ = c.validate();
+   |         +++++++
+
+warning: `weak-suite` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+
+*** result: Success
+
+*** /nix/store/w20n3pmhhd1av9llykxa3gd21c9jsm8l-cargo-1.98.1/bin/cargo nextest run --verbose --package=weak-suite@0.0.0
+warning: unused `Result` that must be used
+  --> src/config.rs:66:9
+   |
+66 |         c.validate();
+   |         ^^^^^^^^^^^^
+   |
+   = note: this `Result` may be an `Err` variant, which should be handled
+   = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+   |
+66 |         let _ = c.validate();
+   |         +++++++
+
+warning: `weak-suite` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID d92b5269-449a-4a07-b828-a031c6572520 with nextest profile: default
+    Starting 4 tests across 1 binary
+       START [         ] (1/4) weak-suite config::tests::test_set_retries
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::test_set_retries --nocapture
+       START [         ] (1/4) weak-suite config::tests::test_validate
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::test_validate --nocapture
+       START [         ] (1/4) weak-suite config::tests::test_parse
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::test_parse --nocapture
+       START [         ] (1/4) weak-suite config::tests::parse_extracts_host_and_port
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::parse_extracts_host_and_port --nocapture
+        PASS [   0.005s] (1/4) weak-suite config::tests::parse_extracts_host_and_port
+        PASS [   0.005s] (2/4) weak-suite config::tests::test_validate
+        PASS [   0.005s] (3/4) weak-suite config::tests::test_set_retries
+        PASS [   0.005s] (4/4) weak-suite config::tests::test_parse
+────────────
+     Summary [   0.006s] 4 tests run: 4 passed, 0 skipped
+
+*** result: Success

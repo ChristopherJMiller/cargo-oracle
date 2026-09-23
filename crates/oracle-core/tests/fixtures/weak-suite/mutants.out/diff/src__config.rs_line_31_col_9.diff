@@ -1,0 +1,24 @@
+--- src/config.rs
++++ replace Config::validate -> Result<(), String> with Ok(())
+@@ -23,20 +23,17 @@
+ 
+     /// Mutates the receiver and returns nothing: the required oracle is
+     /// post-state, and a return-value assertion cannot reach it.
+     pub fn set_retries(&mut self, n: u8) {
+         self.retries = n.min(10);
+     }
+ 
+     pub fn validate(&self) -> Result<(), String> {
+-        if self.host.is_empty() {
+-            return Err("empty host".to_string());
+-        }
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ pub fn parse(s: &str) -> Result<Config, String> {
+     let (host, port) = s.split_once(':').ok_or("missing port")?;
+     let port: u16 = port.parse().map_err(|_| "bad port".to_string())?;
+     Ok(Config::new(host, port))
+ }

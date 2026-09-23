@@ -766,3 +766,225 @@ pub fn render_attribution(inv: &Inventory, attribution: &AttributionMap, verbose
     );
     out
 }
+
+// ---------------------------------------------------------------------------
+// Slice v3 rendering: the verification report
+// ---------------------------------------------------------------------------
+
+use crate::mutation::{MutationMap, Verification};
+
+/// The report the other three slices exist to produce.
+///
+/// Two things here cannot be said by any single slice alone. The first is the
+/// per-test verdict `executes N, verifies M`, which needs v2's attribution
+/// edges and v3's kill attribution together — it is the direct answer to "did
+/// this test actually check anything?". The second is the confirmation line:
+/// where ORC010 statically predicted a symbol could not be verified, v3 says
+/// whether it was right.
+pub fn render_verification(
+    inv: &Inventory,
+    mutation: &MutationMap,
+    attribution: Option<&AttributionMap>,
+    verbose: bool,
+) -> String {
+    let claims = ClaimMap::build(inv);
+    let oracles = lint::analyze(inv);
+    let shape = lint::shape_mismatches(inv, &claims, &oracles);
+
+    let mut out = String::new();
+    let mut counts: BTreeMap<Verification, usize> = BTreeMap::new();
+    let (mut caught, mut missed, mut unviable) = (0usize, 0usize, 0usize);
+
+    let mut by_file: BTreeMap<&str, Vec<&Symbol>> = BTreeMap::new();
+    for symbol in inv.scorable() {
+        by_file
+            .entry(symbol.id.file.as_str())
+            .or_default()
+            .push(symbol);
+    }
+
+    for (file, symbols) in by_file {
+        let mut lines: Vec<String> = Vec::new();
+
+        for symbol in symbols {
+            let verdict = mutation.verdict(&symbol.id);
+            let verification = verdict.verification();
+            *counts.entry(verification).or_default() += 1;
+            caught += verdict.caught;
+            missed += verdict.missed;
+            unviable += verdict.unviable;
+
+            if !verbose && verification == Verification::Verified {
+                continue;
+            }
+
+            let detail = match verification {
+                Verification::Verified => {
+                    let who: Vec<&str> = verdict.killed_by.iter().map(|t| leaf(&t.path)).collect();
+                    if who.is_empty() {
+                        "caught, killer not identified in the log".to_string()
+                    } else {
+                        format!("by {}", who.join(", "))
+                    }
+                }
+                Verification::PseudoTested => {
+                    let survivors: Vec<String> = verdict
+                        .survivors
+                        .iter()
+                        .take(3)
+                        .map(|s| truncate(s, 28))
+                        .collect();
+                    format!(
+                        "{} survived: {}",
+                        plural(verdict.missed, "mutant"),
+                        survivors.join(", ")
+                    )
+                }
+                Verification::NoViableMutant => {
+                    format!("{} would not compile", plural(verdict.unviable, "mutant"))
+                }
+                Verification::NotMutated => {
+                    // Body replacement has no default for every return type --
+                    // `-> Self` on a constructor, most notably. That makes the
+                    // symbol *unscorable*, which is not the same as unverified.
+                    "no mutant exists for this signature -- unscorable, not unverified".to_string()
+                }
+            };
+
+            lines.push(format!(
+                "  {:<40} {:<17} {}",
+                truncate(leaf_path(&symbol.path), 40),
+                verification.label(),
+                detail
+            ));
+
+            // Where the static rule called it, say so. A prediction that holds
+            // is the cheap check earning its place against the expensive one.
+            if verification == Verification::PseudoTested {
+                if let Some(finding) = shape
+                    .iter()
+                    .find(|f| f.symbol.as_deref() == Some(symbol.path.as_str()))
+                {
+                    lines.push(format!(
+                        "  {:<40} ^ predicted by {} -- {}",
+                        "",
+                        finding.rule.id(),
+                        truncate(&finding.snippet, 60)
+                    ));
+                }
+                if let Some(attribution) = attribution {
+                    if attribution
+                        .tests_for(&symbol.id)
+                        .is_none_or(|t| t.is_empty())
+                    {
+                        lines.push(format!("  {:<40} ^ no test executes it at all", ""));
+                    }
+                }
+            }
+        }
+
+        if !lines.is_empty() {
+            let _ = writeln!(out, "{file}");
+            for line in lines {
+                let _ = writeln!(out, "{}", line.trim_end());
+            }
+            out.push('\n');
+        }
+    }
+
+    // The per-test verdict: the direct answer to "did this test check anything?"
+    if let Some(attribution) = attribution {
+        let mut verifies: BTreeMap<&TestId, usize> = BTreeMap::new();
+        for verdict in mutation.verdicts.values() {
+            for test in &verdict.killed_by {
+                *verifies.entry(test).or_default() += 1;
+            }
+        }
+
+        let _ = writeln!(
+            out,
+            "per-test verdict\n  {:<52} {:>9} {:>9}",
+            "TEST", "EXECUTES", "VERIFIES"
+        );
+        let mut rows: Vec<(&TestId, usize, usize)> = attribution
+            .executes
+            .iter()
+            .map(|(test, symbols)| {
+                (
+                    test,
+                    symbols.len(),
+                    verifies.get(test).copied().unwrap_or(0),
+                )
+            })
+            .collect();
+        // Most reach with least verification first: the tests to look at.
+        rows.sort_by_key(|(_, exec, ver)| (*ver, std::cmp::Reverse(*exec)));
+
+        for (test, exec, ver) in &rows {
+            let flag = if *ver == 0 && *exec > 0 {
+                "  <- runs code, verifies none of it"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                out,
+                "  {:<52} {:>9} {:>9}{}",
+                truncate(&test.path, 52),
+                exec,
+                ver,
+                flag
+            );
+        }
+        out.push('\n');
+    }
+
+    if !mutation.unattributed.is_empty() {
+        let _ = writeln!(
+            out,
+            "{} mutant(s) fell outside every inventoried symbol (macro bodies, or skipped code)\n",
+            mutation.unattributed.len()
+        );
+    }
+    if !mutation.unresolved_killers.is_empty() && verbose {
+        let _ = writeln!(
+            out,
+            "killer names matching no inventoried test: {}\n",
+            mutation
+                .unresolved_killers
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    let get = |v: Verification| counts.get(&v).copied().unwrap_or(0);
+    let scored = get(Verification::Verified) + get(Verification::PseudoTested);
+    let _ = writeln!(
+        out,
+        "summary\n  verified          {}\n  PSEUDO-TESTED     {}\n  no viable mutant  {}\n  not mutated       {}",
+        get(Verification::Verified),
+        get(Verification::PseudoTested),
+        get(Verification::NoViableMutant),
+        get(Verification::NotMutated),
+    );
+    if scored > 0 {
+        let _ = writeln!(
+            out,
+            "  symbol score      {}/{} verified ({} mutants on scorable symbols: {} caught, {} missed, {} unviable; {} generated overall)",
+            get(Verification::Verified),
+            scored,
+            caught + missed + unviable,
+            caught,
+            missed,
+            unviable,
+            mutation.total_mutants
+        );
+    }
+
+    let _ = writeln!(
+        out,
+        "\nnextest stops at the first failure, so a killer named here is sufficient,\nnot exhaustive: other tests may also catch the same mutant."
+    );
+    out
+}

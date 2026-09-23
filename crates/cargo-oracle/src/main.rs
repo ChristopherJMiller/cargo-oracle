@@ -11,6 +11,7 @@ use oracle_core::claims::ClaimMap;
 use oracle_core::coverage::{self, CoverageMap};
 use oracle_core::inventory::walk_workspace;
 use oracle_core::lint::Severity;
+use oracle_core::mutation::{self, MutationMap};
 use oracle_core::report::{self, Report};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -84,6 +85,25 @@ enum Command {
         /// List what would be profiled, and stop.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Mutation verification: which tests would fail if a symbol broke.
+    ///
+    /// Recompiles once per mutant, so scope it with --in-diff on anything
+    /// larger than a small crate.
+    Verify {
+        /// Read an existing mutants.out directory instead of running.
+        #[arg(long, value_name = "DIR")]
+        mutants_out: Option<PathBuf>,
+        /// Only mutate regions changed in this diff file.
+        #[arg(long, value_name = "FILE")]
+        in_diff: Option<PathBuf>,
+        /// Also profile per-test attribution, so the report can say
+        /// `executes N, verifies M`. Costs one instrumented run per test.
+        #[arg(long)]
+        with_attribution: bool,
+        /// Extra arguments forwarded to `cargo mutants`, after `--`.
+        #[arg(last = true)]
+        cargo_args: Vec<String>,
     },
     /// The full audit: inventory, claims, and oracle findings.
     Report {
@@ -208,6 +228,60 @@ fn main() -> Result<()> {
                 Format::Text => print!(
                     "{}",
                     report::render_attribution(&inventory, &map, cli.verbose)
+                ),
+            }
+            0
+        }
+
+        Command::Verify {
+            mutants_out,
+            in_diff,
+            with_attribution,
+            mut cargo_args,
+        } => {
+            let out_dir = match mutants_out {
+                Some(dir) => dir,
+                None => {
+                    if let Some(diff) = &in_diff {
+                        cargo_args.push("--in-diff".into());
+                        cargo_args.push(diff.display().to_string());
+                    }
+                    eprintln!(
+                        "running `cargo mutants` -- one rebuild per mutant, so this is the \
+                         expensive slice"
+                    );
+                    mutation::run_mutants(&dir, &cargo_args)?
+                }
+            };
+
+            let mutants = mutation::load(&out_dir)?;
+            let map = MutationMap::build(&inventory, &mutants);
+
+            let attribution = if with_attribution {
+                let tests = attribution::list_tests(&dir)?;
+                eprintln!("profiling {} test(s) for attribution...", tests.len());
+                let scratch = PathBuf::from(&inventory.root).join("target/oracle");
+                Some(attribution::build(
+                    &inventory,
+                    &dir,
+                    &scratch,
+                    &tests,
+                    |i, n, t| eprintln!("  [{i}/{n}] {}", t.testcase),
+                )?)
+            } else {
+                None
+            };
+
+            match cli.format {
+                Format::Json => println!("{}", serde_json::to_string_pretty(&map)?),
+                Format::Text => print!(
+                    "{}",
+                    report::render_verification(
+                        &inventory,
+                        &map,
+                        attribution.as_ref(),
+                        cli.verbose
+                    )
                 ),
             }
             0

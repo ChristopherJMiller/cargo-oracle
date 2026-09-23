@@ -1,0 +1,100 @@
+
+*** src/config.rs:27:9: replace Config::set_retries with ()
+
+*** mutation diff:
+--- src/config.rs
++++ replace Config::set_retries with ()
+@@ -19,17 +19,17 @@
+     /// An accessor: nothing to destroy, so it should not be scored.
+     pub fn host(&self) -> &str {
+         &self.host
+     }
+ 
+     /// Mutates the receiver and returns nothing: the required oracle is
+     /// post-state, and a return-value assertion cannot reach it.
+     pub fn set_retries(&mut self, n: u8) {
+-        self.retries = n.min(10);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn validate(&self) -> Result<(), String> {
+         if self.host.is_empty() {
+             return Err("empty host".to_string());
+         }
+         Ok(())
+     }
+
+
+*** /nix/store/w20n3pmhhd1av9llykxa3gd21c9jsm8l-cargo-1.98.1/bin/cargo nextest run --no-run --verbose --package=weak-suite@0.0.0
+   Compiling weak-suite v0.0.0 (/tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp)
+warning: unused variable: `n`
+  --> src/config.rs:26:35
+   |
+26 |     pub fn set_retries(&mut self, n: u8) {
+   |                                   ^ help: if this is intentional, prefix it with an underscore: `_n`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused `Result` that must be used
+  --> src/config.rs:66:9
+   |
+66 |         c.validate();
+   |         ^^^^^^^^^^^^
+   |
+   = note: this `Result` may be an `Err` variant, which should be handled
+   = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+   |
+66 |         let _ = c.validate();
+   |         +++++++
+
+warning: `weak-suite` (lib) generated 1 warning (run `cargo fix --lib -p weak-suite` to apply 1 suggestion)
+warning: `weak-suite` (lib test) generated 2 warnings (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+
+*** result: Success
+
+*** /nix/store/w20n3pmhhd1av9llykxa3gd21c9jsm8l-cargo-1.98.1/bin/cargo nextest run --verbose --package=weak-suite@0.0.0
+warning: unused variable: `n`
+  --> src/config.rs:26:35
+   |
+26 |     pub fn set_retries(&mut self, n: u8) {
+   |                                   ^ help: if this is intentional, prefix it with an underscore: `_n`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `weak-suite` (lib) generated 1 warning (run `cargo fix --lib -p weak-suite` to apply 1 suggestion)
+warning: unused `Result` that must be used
+  --> src/config.rs:66:9
+   |
+66 |         c.validate();
+   |         ^^^^^^^^^^^^
+   |
+   = note: this `Result` may be an `Err` variant, which should be handled
+   = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+   |
+66 |         let _ = c.validate();
+   |         +++++++
+
+warning: `weak-suite` (lib test) generated 2 warnings (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID a06c0976-3070-41a7-9e21-a6fa190ba5c2 with nextest profile: default
+    Starting 4 tests across 1 binary
+       START [         ] (1/4) weak-suite config::tests::test_validate
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::test_validate --nocapture
+       START [         ] (1/4) weak-suite config::tests::parse_extracts_host_and_port
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::parse_extracts_host_and_port --nocapture
+       START [         ] (1/4) weak-suite config::tests::test_set_retries
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::test_set_retries --nocapture
+       START [         ] (1/4) weak-suite config::tests::test_parse
+             command: /tmp/nix-shell.ZnrGGQ/cargo-mutants-weak-suite-lMOTYI.tmp/target/debug/deps/weak_suite-011e86fdd8634d18 --exact config::tests::test_parse --nocapture
+        PASS [   0.005s] (1/4) weak-suite config::tests::test_set_retries
+        PASS [   0.005s] (2/4) weak-suite config::tests::test_parse
+        PASS [   0.006s] (3/4) weak-suite config::tests::test_validate
+        PASS [   0.006s] (4/4) weak-suite config::tests::parse_extracts_host_and_port
+────────────
+     Summary [   0.007s] 4 tests run: 4 passed, 0 skipped
+
+*** result: Success

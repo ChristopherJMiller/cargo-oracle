@@ -66,6 +66,8 @@ cargo oracle coverage             # which symbols actually run (builds + runs te
 cargo oracle coverage --coverage-json report.json   # reuse an existing report
 cargo oracle attribute            # which test runs which symbol (O(tests), slow)
 cargo oracle attribute --tests parse --dry-run     # scope it first
+cargo oracle verify --in-diff pr.diff              # mutate only changed regions
+cargo oracle verify --with-attribution            # adds the per-test verdict
 cargo oracle --format json lint   # machine-readable
 ```
 
@@ -82,13 +84,15 @@ Built in slices, each independently useful.
   gives one profile per test, so *executes* becomes an edge rather than a bit.
   Surfaces tests with broad reach and no discrimination, symbols no test
   reaches, and symbols only one test reaches.
-- **v3 — verification**: `cargo-mutants` body-replacement mutants, with kills
-  attributed back to the individual test that caught them.
+- **v3 — verification** ✅ : `cargo-mutants` body-replacement mutants, with
+  kills attributed back to the individual test that caught them. Produces the
+  per-test `executes N, verifies M` verdict, and confirms or refutes the ORC010
+  predictions v0 made for free.
 
-v0 and v1 deliberately stop short of claiming a symbol is *verified* — that
-needs mutation evidence. What they can say is that an oracle cannot
-discriminate, that nothing claims a symbol, and that something claims it but
-never runs it.
+Each slice is honest about what its evidence supports. v0 and v1 never claim a
+symbol is *verified*; v3 never reports an unscorable symbol as a passing one.
+There are three distinct ways to be unscorable and none of them mean "verified"
+— see [docs/design.md](docs/design.md).
 
 ## Documentation
 

@@ -1,0 +1,21 @@
+--- src/config.rs
++++ replace Config::set_retries with ()
+@@ -19,17 +19,17 @@
+     /// An accessor: nothing to destroy, so it should not be scored.
+     pub fn host(&self) -> &str {
+         &self.host
+     }
+ 
+     /// Mutates the receiver and returns nothing: the required oracle is
+     /// post-state, and a return-value assertion cannot reach it.
+     pub fn set_retries(&mut self, n: u8) {
+-        self.retries = n.min(10);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn validate(&self) -> Result<(), String> {
+         if self.host.is_empty() {
+             return Err("empty host".to_string());
+         }
+         Ok(())
+     }

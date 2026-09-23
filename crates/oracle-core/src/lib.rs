@@ -15,6 +15,7 @@ pub mod claims;
 pub mod coverage;
 pub mod inventory;
 pub mod lint;
+pub mod mutation;
 pub mod report;
 pub mod symbol;
 
