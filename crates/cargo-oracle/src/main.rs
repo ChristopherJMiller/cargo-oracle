@@ -7,9 +7,10 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use oracle_core::claims::ClaimMap;
+use oracle_core::coverage::{self, CoverageMap};
 use oracle_core::inventory::walk_workspace;
 use oracle_core::lint::Severity;
-use oracle_core::report::Report;
+use oracle_core::report::{self, Report};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -62,6 +63,15 @@ enum Command {
     Inventory,
     /// Show which tests claim which symbols, and what nothing claims.
     Claims,
+    /// Join `cargo llvm-cov` output onto the inventory: which symbols run.
+    Coverage {
+        /// Use an existing llvm-cov JSON report instead of producing one.
+        #[arg(long, value_name = "PATH")]
+        coverage_json: Option<PathBuf>,
+        /// Extra arguments forwarded to `cargo llvm-cov`, after `--`.
+        #[arg(last = true)]
+        cargo_args: Vec<String>,
+    },
     /// The full audit: inventory, claims, and oracle findings.
     Report {
         #[arg(long, value_enum, default_value_t = DenyLevel::Never)]
@@ -122,6 +132,31 @@ fn main() -> Result<()> {
                             notes.join(", ")
                         );
                     }
+                }
+            }
+            0
+        }
+
+        Command::Coverage {
+            coverage_json,
+            cargo_args,
+        } => {
+            let root = PathBuf::from(&inventory.root);
+            let path = match coverage_json {
+                Some(path) => path,
+                None => {
+                    let out = root.join("target/oracle/coverage.json");
+                    eprintln!("running `cargo llvm-cov` (builds and runs the test suite)...");
+                    coverage::run_llvm_cov(&dir, &out, &cargo_args)?;
+                    out
+                }
+            };
+            let data = coverage::load(&path, &root)?;
+            let map = CoverageMap::join(&inventory, &data);
+            match cli.format {
+                Format::Json => println!("{}", serde_json::to_string_pretty(&map)?),
+                Format::Text => {
+                    print!("{}", report::render_coverage(&inventory, &map, cli.verbose))
                 }
             }
             0

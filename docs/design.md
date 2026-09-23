@@ -32,8 +32,8 @@ the symbol identity that v0 establishes.
 | **v2** attribution | Which *test* runs which symbol? | `cargo-nextest`, one profile per test | N profiles + merges |
 | **v3** verification | Which test *fails* when the symbol's body is destroyed? | `cargo-mutants` | one rebuild per mutant |
 
-v0 is implemented. The rest are sketched below so the data model does not have
-to change to accept them.
+v0 and v1 are implemented. v2 and v3 are sketched below so the data model does
+not have to change to accept them.
 
 ## Symbol identity is a span, not a name
 
@@ -61,23 +61,36 @@ with a `LineSpan` from the `fn` keyword to the closing brace used for
 containment. Columns are 1-based to match `cargo-mutants` output; `proc-macro2`
 hands us 0-based columns and `SymbolId::new` adjusts.
 
-## Four states per symbol
+## Symbol states
 
 | State | Meaning | Evidence needed |
 |---|---|---|
-| `unclaimed` / `unexecuted` | Nothing speaks for it; nothing runs it | v0 / v1 |
-| `pseudo-tested` | Tests run it, but destroying its body fails no test | v3 |
-| `verified` | Some named test fails when the body is destroyed | v3 |
-| `type-enforced` | No viable mutant exists | v0 (predicted) / v3 (confirmed) |
+| `unexecuted` | Nothing runs it | v1 |
+| `claimed, not run` | A test module or doctest claims it, and nothing runs it | v0 + v1 |
+| `executed` | Runs. Whether anything *checks* it is a separate question | v1 |
+| `pseudo-tested` | Runs, but destroying its body fails no test | v3 |
+| `verified` | A named test fails when the body is destroyed | v3 |
+| `no viable mutant` | Cannot be scored by body replacement | v0 predicts, v3 confirms |
 
-The fourth state is Rust-specific and a design error to omit. When
-`Default::default()` does not typecheck as a body — `-> impl Iterator`, a type
-with no `Default`, a `const fn` — cargo-mutants drops the mutant as *unviable*.
-That is not an unknown and not a gap: it is the type system reporting that it
-carries part of this function's contract itself. A port of a Java design buckets
-these with "unverified" and generates a pile of false alarms on exactly the code
-Rust protects best. `Symbol::likely_unviable_to_mutate` predicts the category
-statically; v3 will confirm it.
+`claimed, not run` is worth separating from plain `unexecuted`. Both are
+uncovered, but in the first case someone took responsibility for the symbol —
+put a test module in its file, or wrote a doctest — and then did not exercise
+it. That is a broken promise rather than an absence.
+
+The last state needs care, and an earlier draft of this document got it wrong.
+When `Default::default()` does not typecheck as a replacement body,
+cargo-mutants drops the mutant as *unviable*, and it is tempting to read that as
+"the type system carries this function's contract". Sometimes it is: a return
+type with no meaningful `Default` genuinely constrains what the function can do.
+But `-> impl Trait`, `-> !` and `const fn` are unviable for a duller reason —
+our mutation operator is body replacement, and body replacement does not apply.
+That is a **blind spot, not a guarantee**, and reporting it as "type-enforced"
+would launder a gap into a reassurance.
+
+So v0 predicts the category from the signature and names it `no viable mutant`.
+v3 confirms it and can finally distinguish the two causes, because cargo-mutants
+reports *why* it skipped a mutant.
+
 
 ## The oracle a signature requires
 
@@ -95,6 +108,39 @@ signature alone.
 `RequiredOracle::derive` computes this, and ORC010 enforces it. No amount of
 coverage or assertion density substitutes: a test that calls `fn(&mut self)` and
 never mentions the receiver again cannot detect a fault in it.
+
+## Slice v1: the coverage join
+
+`-C instrument-coverage` is unusual in being natively *function*-granular:
+`cargo llvm-cov --json` emits a `functions[]` array with an execution count and
+source regions per function. The symbol layer is the native unit here and the
+line view is derived; most tooling has that backwards.
+
+Names are never compared. Each coverage entry is placed by the start line of its
+first region, and the inventory span containing that line claims it:
+
+| Entry starts | Classified as | Count handling |
+|---|---|---|
+| exactly at a symbol's `fn` line | an entry *for* that symbol | summed |
+| strictly inside a symbol's span | **nested** — a closure, `async` block, generator | tracked separately |
+| in no span at all | macro or derive output | counted and reported |
+
+Verified against real llvm-cov output for the fixture crate: every symbol's
+first region started exactly at the `fn` line, and `parse`'s `.map_err(|_| ..)`
+closure appeared as its own entry starting at line 40, inside `parse`'s span of
+38–42. Folding the closure's zero count into its parent would have been wrong
+in both directions — `parse` ran twice, and the closure genuinely never ran.
+
+An uncovered closure inside a covered function is often the most useful line in
+the report: it is an error path nothing exercised.
+
+**One entry per symbol is not guaranteed, and more than one does not mean
+generics.** The same function compiled into a library and into the test harness
+that links it produces two entries, exactly as a generic monomorphized twice
+does. The join is correct either way and the counts sum to total executions, but
+the number cannot be read as an instantiation count — an earlier version of the
+report labelled it that way and was wrong on every non-generic function in the
+workspace.
 
 ## The claim map
 
@@ -172,3 +218,8 @@ not always hold.
   lands; untested until there is coverage data to join against.
 - Visibility is read from the item, so a `pub` item inside a private module is
   reported as public. Only affects the weakest claim edge.
+- Coverage entry counts merge across binaries (a lib and the test harness that
+  links it), so `entries > 1` cannot be read as a generic instantiation count.
+- Doctests are not included in coverage unless `cargo llvm-cov --doctests` is
+  passed, so a symbol covered *only* by a doctest currently reports as
+  unexecuted.

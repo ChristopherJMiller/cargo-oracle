@@ -11,6 +11,7 @@
 //! onto [`symbol::SymbolId`] and are added as further modules.
 
 pub mod claims;
+pub mod coverage;
 pub mod inventory;
 pub mod lint;
 pub mod report;

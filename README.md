@@ -62,6 +62,8 @@ cargo oracle lint                 # static oracle audit (no build, no test run)
 cargo oracle lint --deny high     # exit 1 on any high-severity finding, for CI
 cargo oracle inventory            # symbols and the oracle shape each requires
 cargo oracle claims               # which tests speak for which symbols
+cargo oracle coverage             # which symbols actually run (builds + runs tests)
+cargo oracle coverage --coverage-json report.json   # reuse an existing report
 cargo oracle --format json lint   # machine-readable
 ```
 
@@ -71,16 +73,18 @@ Built in slices, each independently useful.
 
 - **v0 — static** ✅ : symbol inventory, claim map, ten oracle-strength lints.
   No build, no execution, milliseconds on a whole workspace.
-- **v1 — execution**: function-level coverage from `cargo llvm-cov --json`,
-  joined to the inventory by definition span.
+- **v1 — execution** ✅ : function-level coverage from `cargo llvm-cov --json`,
+  joined to the inventory by definition span. Separates monomorphized entries
+  from nested closures, and `claimed, not run` from plain `unexecuted`.
 - **v2 — per-test attribution**: `cargo-nextest`'s process-per-test model gives
   one profile per test, so *executes* becomes an edge rather than a bit.
 - **v3 — verification**: `cargo-mutants` body-replacement mutants, with kills
   attributed back to the individual test that caught them.
 
-v0 deliberately does not claim a symbol is *verified* — that needs mutation
-evidence. What it can say is that an oracle cannot discriminate, and that
-nothing claims a symbol at all.
+v0 and v1 deliberately stop short of claiming a symbol is *verified* — that
+needs mutation evidence. What they can say is that an oracle cannot
+discriminate, that nothing claims a symbol, and that something claims it but
+never runs it.
 
 ## Documentation
 

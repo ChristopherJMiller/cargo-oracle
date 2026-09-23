@@ -195,3 +195,117 @@ fn a_nested_fixture_crate_is_not_attributed_to_its_host_package() {
         "fixture tests were attributed to oracle_core"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Slice v1: the coverage join
+// ---------------------------------------------------------------------------
+
+/// Real `cargo llvm-cov --json` output for the weak-suite fixture, with the
+/// machine-specific workspace root templated out. Using a genuine artifact
+/// rather than a hand-written one means the join is tested against the schema
+/// llvm-cov actually emits, monomorphization and closure entries included.
+fn fixture_coverage() -> (Inventory, oracle_core::coverage::CoverageMap) {
+    use oracle_core::coverage;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/weak-suite");
+    let raw = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/weak-suite-coverage.json"),
+    )
+    .expect("coverage fixture must exist")
+    .replace("{ROOT}", root.to_str().expect("root path is utf-8"));
+
+    let data = coverage::parse(&raw, &root).expect("llvm-cov output must parse");
+    let inv = fixture();
+    let map = coverage::CoverageMap::join(&inv, &data);
+    (inv, map)
+}
+
+#[test]
+fn coverage_places_every_entry_with_no_leftovers() {
+    let (_, map) = fixture_coverage();
+    assert_eq!(
+        map.unmatched, 0,
+        "every coverage entry should land on a symbol or a test"
+    );
+    assert_eq!(
+        map.tests.len(),
+        4,
+        "four #[test] functions were inventoried"
+    );
+    assert!(map.files_without_coverage.is_empty());
+}
+
+#[test]
+fn execution_counts_are_summed_onto_the_defining_symbol() {
+    let (inv, map) = fixture_coverage();
+
+    // `Config::new` is reached by every test, directly or through `parse`.
+    let new = map.for_symbol(&sym(&inv, "new").id);
+    assert_eq!(new.execution_count, 4);
+    assert_eq!(new.entries, 1, "one binary, no generics: a single entry");
+    assert!(new.executed());
+
+    let parse = map.for_symbol(&sym(&inv, "parse").id);
+    assert_eq!(parse.execution_count, 2);
+}
+
+#[test]
+fn an_uncalled_accessor_is_reported_as_unexecuted() {
+    let (inv, map) = fixture_coverage();
+    let host = map.for_symbol(&sym(&inv, "host").id);
+    assert_eq!(host.execution_count, 0);
+    assert!(!host.executed());
+}
+
+#[test]
+fn a_closure_lands_inside_its_enclosing_symbol_not_beside_it() {
+    let (inv, map) = fixture_coverage();
+
+    // `parse` contains a `.map_err(|_| ...)` closure that llvm-cov reports as
+    // its own function entry, starting inside `parse`'s span. It must not be
+    // mistaken for a symbol, and its zero count must not drag down `parse`.
+    let parse = map.for_symbol(&sym(&inv, "parse").id);
+    assert_eq!(parse.nested, 1, "the map_err closure is a nested entry");
+    assert_eq!(
+        parse.nested_uncovered, 1,
+        "no test exercises the bad-port path, so the closure never ran"
+    );
+    assert_eq!(
+        parse.execution_count, 2,
+        "the closure's count must not be folded into its parent's"
+    );
+}
+
+#[test]
+fn execution_state_distinguishes_claimed_but_unrun_from_executed() {
+    use oracle_core::claims::ClaimMap;
+    use oracle_core::report::{execution_state, ExecutionState};
+
+    let (inv, map) = fixture_coverage();
+    let claims = ClaimMap::build(&inv);
+
+    assert_eq!(
+        execution_state(sym(&inv, "parse"), &map, &claims),
+        ExecutionState::Executed
+    );
+
+    // `redact` is claimed by the same-file test module and never called. That
+    // is a stronger finding than "nothing claims it": someone took
+    // responsibility for it and then did not exercise it.
+    assert_eq!(
+        execution_state(sym(&inv, "redact"), &map, &claims),
+        ExecutionState::ClaimedButUnexecuted
+    );
+    assert_eq!(map.for_symbol(&sym(&inv, "redact").id).execution_count, 0);
+}
+
+#[test]
+fn an_accessor_is_excluded_from_scoring_and_so_from_claims() {
+    let (inv, _) = fixture_coverage();
+    let claims = ClaimMap::build(&inv);
+
+    // `Config::host` is a bare field read. It is inventoried, but not scorable,
+    // so no test is held responsible for it and it never reaches a report.
+    assert_eq!(sym(&inv, "host").triviality, Triviality::Accessor);
+    assert!(claims.claimants(&sym(&inv, "host").id).is_empty());
+}

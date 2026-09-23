@@ -75,6 +75,9 @@ pub struct TestItem {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Inventory {
+    /// Absolute workspace root. Coverage reports use absolute paths; symbol
+    /// IDs are relative to this, so the join needs it.
+    pub root: String,
     pub symbols: Vec<Symbol>,
     pub tests: Vec<TestItem>,
     /// Source files parsed, relative to the workspace root.
@@ -112,7 +115,10 @@ pub fn walk_workspace(manifest_dir: &Path) -> Result<Inventory> {
         .context("running `cargo metadata` (is this a cargo workspace?)")?;
 
     let root = PathBuf::from(metadata.workspace_root.as_std_path());
-    let mut inv = Inventory::default();
+    let mut inv = Inventory {
+        root: root.display().to_string(),
+        ..Default::default()
+    };
 
     for package in metadata.workspace_packages() {
         let pkg_dir = package
