@@ -654,3 +654,129 @@ error: test run failed
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Diff scoping
+// ---------------------------------------------------------------------------
+
+/// Produce a diff of the working tree against `base`, for `--in-diff`.
+///
+/// cargo-mutants requires the *new* side of the diff to match the tree it is
+/// mutating, which rules out `git diff base..head` on a clean checkout of some
+/// other commit. `git diff <base>` compares the working tree to `base`, so the
+/// new side is by construction what is on disk.
+///
+/// # Errors
+///
+/// Fails if `git` is unavailable, or if `base` is not a commit this repository
+/// knows about.
+pub fn diff_since(repo: &Path, base: &str) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(["diff", "--no-color", "--no-ext-diff", base, "--"])
+        .output()
+        .context("running `git diff` (is git installed and is this a repository?)")?;
+
+    if !output.status.success() {
+        bail!(
+            "`git diff {base}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8(output.stdout).context("`git diff` produced non-UTF-8 output")
+}
+
+/// Which files a unified diff touches, as paths relative to the repository root.
+///
+/// Used to tell "the diff changed nothing we can mutate" from "the diff changed
+/// Rust code but every mutant survived" — two very different reports.
+///
+/// ```
+/// use oracle_core::mutation::files_in_diff;
+///
+/// let diff = "\
+/// diff --git a/src/lib.rs b/src/lib.rs
+/// index 1234567..89abcde 100644
+/// --- a/src/lib.rs
+/// +++ b/src/lib.rs
+/// @@ -1 +1 @@
+/// -old
+/// +new
+/// ";
+/// assert_eq!(files_in_diff(diff), vec!["src/lib.rs"]);
+/// ```
+pub fn files_in_diff(diff: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    for line in diff.lines() {
+        let Some(rest) = line.strip_prefix("+++ ") else {
+            continue;
+        };
+        let path = rest.trim();
+        // `/dev/null` is a deletion: there is no new side to mutate.
+        if path == "/dev/null" {
+            continue;
+        }
+        let path = path.strip_prefix("b/").unwrap_or(path);
+        let path = path.split('\t').next().unwrap_or(path).to_string();
+        if !files.contains(&path) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// Whether a diff touches any Rust source at all.
+///
+/// ```
+/// use oracle_core::mutation::diff_touches_rust;
+///
+/// assert!(diff_touches_rust("+++ b/src/lib.rs\n"));
+/// assert!(!diff_touches_rust("+++ b/README.md\n"));
+/// assert!(!diff_touches_rust(""), "an empty diff touches nothing");
+/// ```
+pub fn diff_touches_rust(diff: &str) -> bool {
+    files_in_diff(diff).iter().any(|f| f.ends_with(".rs"))
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    const DIFF: &str = "\
+diff --git a/src/config.rs b/src/config.rs
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -1,3 +1,3 @@
+-old
++new
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-a
++b
+diff --git a/src/gone.rs b/src/gone.rs
+--- a/src/gone.rs
++++ /dev/null
+";
+
+    #[test]
+    fn every_changed_file_is_listed_once_without_the_b_prefix() {
+        assert_eq!(files_in_diff(DIFF), vec!["src/config.rs", "README.md"]);
+    }
+
+    #[test]
+    fn a_deleted_file_has_no_new_side_to_mutate() {
+        assert!(
+            !files_in_diff(DIFF).contains(&"src/gone.rs".to_string()),
+            "a file deleted in the diff cannot be mutated"
+        );
+    }
+
+    #[test]
+    fn a_docs_only_diff_is_distinguished_from_a_code_diff() {
+        let docs_only = "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n";
+        assert!(!diff_touches_rust(docs_only));
+        assert!(diff_touches_rust(DIFF));
+    }
+}

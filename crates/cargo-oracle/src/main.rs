@@ -95,8 +95,14 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         mutants_out: Option<PathBuf>,
         /// Only mutate regions changed in this diff file.
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", conflicts_with = "since")]
         in_diff: Option<PathBuf>,
+        /// Only mutate regions changed since this git ref, e.g. `origin/main`.
+        ///
+        /// Diffs the working tree against the ref, so the new side always
+        /// matches what is on disk -- which is what cargo-mutants requires.
+        #[arg(long, value_name = "REF")]
+        since: Option<String>,
         /// Also profile per-test attribution, so the report can say
         /// `executes N, verifies M`. Costs one instrumented run per test.
         #[arg(long)]
@@ -236,16 +242,48 @@ fn main() -> Result<()> {
         Command::Verify {
             mutants_out,
             in_diff,
+            since,
             with_attribution,
             mut cargo_args,
         } => {
+            let root = PathBuf::from(&inventory.root);
             let out_dir = match mutants_out {
                 Some(dir) => dir,
                 None => {
-                    if let Some(diff) = &in_diff {
+                    // `--since` resolves to a diff file; `--in-diff` is one already.
+                    let diff_file = match (&since, &in_diff) {
+                        (Some(base), _) => {
+                            let diff = mutation::diff_since(&root, base)?;
+                            if !mutation::diff_touches_rust(&diff) {
+                                // A docs-only change has nothing to mutate. That
+                                // is a pass, not an empty report -- a CI gate
+                                // must not fail a README edit.
+                                println!("no Rust source changed since {base}; nothing to verify");
+                                return Ok(());
+                            }
+                            let path = root.join("target/oracle/since.diff");
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            std::fs::write(&path, &diff)?;
+                            eprintln!(
+                                "scoped to {} changed file(s) since {base}",
+                                mutation::files_in_diff(&diff)
+                                    .iter()
+                                    .filter(|f| f.ends_with(".rs"))
+                                    .count()
+                            );
+                            Some(path)
+                        }
+                        (None, Some(path)) => Some(path.clone()),
+                        (None, None) => None,
+                    };
+
+                    if let Some(path) = diff_file {
                         cargo_args.push("--in-diff".into());
-                        cargo_args.push(diff.display().to_string());
+                        cargo_args.push(path.display().to_string());
                     }
+
                     eprintln!(
                         "running `cargo mutants` -- one rebuild per mutant, so this is the \
                          expensive slice"
@@ -260,7 +298,7 @@ fn main() -> Result<()> {
             let attribution = if with_attribution {
                 let tests = attribution::list_tests(&dir)?;
                 eprintln!("profiling {} test(s) for attribution...", tests.len());
-                let scratch = PathBuf::from(&inventory.root).join("target/oracle");
+                let scratch = root.join("target/oracle");
                 Some(attribution::build(
                     &inventory,
                     &dir,
