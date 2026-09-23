@@ -374,3 +374,45 @@ not always hold.
   workspace unexamined. Those symbols report `out of scope`, which is tracked
   separately from `not mutated` — conflating them would report an unexamined
   crate as one with no mutants available.
+
+## Diff scoping in practice
+
+`--since <ref>` is the intended way to run v3. It diffs the **working tree**
+against the ref, so the new side of the diff is by construction what is on
+disk — which is what cargo-mutants requires, and what `git diff base..head`
+does not give you on a clean checkout.
+
+Three details decide whether the resulting report is honest:
+
+1. **A docs-only change is a pass, not an empty report.** A diff touching no
+   Rust source has nothing to mutate. A CI gate must not fail a README edit,
+   nor report it as zero verified symbols.
+
+2. **Scope is recorded, not just applied.** A symbol outside the diff gets no
+   mutant, which in the data is indistinguishable from a symbol the operator
+   could not mutate. `MutationMap` carries the `DiffScope` so the report can
+   say `out of scope` rather than `no mutant exists for this signature`.
+
+3. **Scope is added lines, not hunk ranges.** A hunk header spans its context
+   lines, and cargo-mutants does not mutate on the strength of context.
+   Scoping by the header marks the symbols immediately above and below a change
+   as examined. `DiffScope::parse` walks hunk bodies and records only `+` lines.
+
+That third point cost two false "no mutant exists" lines on a one-function
+change. The general shape of this bug — absence of evidence rendered as evidence
+of absence — has now appeared three times in this project, at file granularity,
+at hunk granularity, and in the `not mutated` state itself. It recurs because
+the two cases are identical in the data structure and only the caller knows
+which one it is.
+
+### Cost, measured
+
+On this workspace, a one-function change:
+
+| Scope | Mutants | Wall clock |
+|---|---|---|
+| whole workspace | 100+ | tens of minutes |
+| `--file claims.rs` | 41 | 2 minutes |
+| `--since HEAD` | 2 | 18 seconds |
+
+That is the difference between a nightly job and a PR gate.

@@ -116,7 +116,8 @@ cargo oracle coverage             # which symbols actually run (builds + runs te
 cargo oracle coverage --coverage-json report.json   # reuse an existing report
 cargo oracle attribute            # which test runs which symbol (O(tests), slow)
 cargo oracle attribute --tests parse --dry-run     # scope it first
-cargo oracle verify --in-diff pr.diff              # mutate only changed regions
+cargo oracle verify --since origin/main            # mutate only what the branch changed
+cargo oracle verify --in-diff pr.diff              # or supply the diff yourself
 cargo oracle verify --with-attribution            # adds the per-test verdict
 cargo oracle --format json lint   # machine-readable
 ```
