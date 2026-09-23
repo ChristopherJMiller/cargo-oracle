@@ -845,7 +845,7 @@ pub fn render_verification(
 
         for symbol in symbols {
             let verdict = mutation.verdict(&symbol.id);
-            let verification = mutation.verification_in(&symbol.id, &symbol.id.file);
+            let verification = mutation.verification_of(symbol);
             *counts.entry(verification).or_default() += 1;
             caught += verdict.caught;
             missed += verdict.missed;

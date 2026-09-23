@@ -192,6 +192,10 @@ pub struct MutationMap {
     /// Files the run generated at least one mutant for. A symbol outside these
     /// was not examined, which is a different statement from finding nothing.
     pub mutated_files: BTreeSet<String>,
+    /// When the run was scoped with `--in-diff`, the regions it covered.
+    /// Without this, symbols in a changed file but outside every hunk are
+    /// misreported as having no viable mutation.
+    pub scope: Option<DiffScope>,
 }
 
 impl MutationMap {
@@ -259,6 +263,29 @@ impl MutationMap {
     /// Evidence for one symbol, defaulting to empty when the run never saw it.
     pub fn verdict(&self, id: &SymbolId) -> SymbolVerdict {
         self.verdicts.get(id).cloned().unwrap_or_default()
+    }
+
+    /// The verdict for a symbol, given what the run actually examined.
+    ///
+    /// Distinguishes "examined and produced nothing" from "never looked at" —
+    /// at file granularity, and at hunk granularity when the run was scoped
+    /// with `--in-diff`. Prefer this over [`MutationMap::verification`], which
+    /// cannot tell the two apart.
+    pub fn verification_of(&self, symbol: &crate::Symbol) -> Verification {
+        if let Some(verdict) = self.verdicts.get(&symbol.id) {
+            return verdict.verification();
+        }
+        // A diff-scoped run only examined certain regions.
+        if let Some(scope) = &self.scope {
+            if !scope.overlaps(&symbol.id.file, symbol.span.start, symbol.span.end) {
+                return Verification::OutOfScope;
+            }
+        }
+        if self.mutated_files.contains(&symbol.id.file) {
+            Verification::NotMutated
+        } else {
+            Verification::OutOfScope
+        }
     }
 
     /// The verdict for a symbol, given what the run actually examined.
@@ -778,5 +805,191 @@ diff --git a/src/gone.rs b/src/gone.rs
         let docs_only = "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n";
         assert!(!diff_touches_rust(docs_only));
         assert!(diff_touches_rust(DIFF));
+    }
+}
+
+/// The line ranges a diff touches, per file, on the *new* side.
+///
+/// `--in-diff` scopes cargo-mutants at hunk granularity, not file granularity.
+/// Without this, a symbol in a changed file but outside every hunk gets no
+/// mutant and is indistinguishable from one the operator could not mutate —
+/// the report would say "no mutant exists for this signature" about code the
+/// run deliberately skipped.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DiffScope {
+    /// Changed line ranges (inclusive) per file, relative to the repo root.
+    pub files: BTreeMap<String, Vec<(u32, u32)>>,
+}
+
+impl DiffScope {
+    /// Parse hunk headers out of a unified diff.
+    ///
+    /// ```
+    /// use oracle_core::mutation::DiffScope;
+    ///
+    /// let diff = "\
+    /// +++ b/src/lib.rs
+    /// @@ -10,3 +12,5 @@ fn context()
+    /// @@ -40 +44 @@
+    /// ";
+    /// let scope = DiffScope::parse(diff);
+    /// assert!(scope.covers("src/lib.rs", 13));
+    /// assert!(scope.covers("src/lib.rs", 44), "a hunk with no count spans one line");
+    /// assert!(!scope.covers("src/lib.rs", 30));
+    /// assert!(!scope.covers("src/other.rs", 13));
+    /// ```
+    pub fn parse(diff: &str) -> Self {
+        let mut files: BTreeMap<String, Vec<(u32, u32)>> = BTreeMap::new();
+        let mut current: Option<String> = None;
+
+        for line in diff.lines() {
+            if let Some(rest) = line.strip_prefix("+++ ") {
+                let path = rest.trim().split('\t').next().unwrap_or("").trim();
+                current = (path != "/dev/null")
+                    .then(|| path.strip_prefix("b/").unwrap_or(path).to_string());
+                continue;
+            }
+
+            let Some(file) = current.as_ref() else {
+                continue;
+            };
+            // `@@ -old,count +new,count @@ optional context`
+            let Some(rest) = line.strip_prefix("@@ ") else {
+                continue;
+            };
+            let Some(new_side) = rest.split_whitespace().find(|t| t.starts_with('+')) else {
+                continue;
+            };
+            let spec = &new_side[1..];
+            let (start, count) = match spec.split_once(',') {
+                Some((s, c)) => (s.parse().unwrap_or(0), c.parse().unwrap_or(1)),
+                None => (spec.parse().unwrap_or(0), 1u32),
+            };
+            if start == 0 {
+                continue; // a pure deletion has no new-side lines
+            }
+            files
+                .entry(file.clone())
+                .or_default()
+                .push((start, start + count.saturating_sub(1)));
+        }
+
+        Self { files }
+    }
+
+    /// Whether this line was touched by the diff.
+    pub fn covers(&self, file: &str, line: u32) -> bool {
+        self.files
+            .get(file)
+            .is_some_and(|ranges| ranges.iter().any(|(a, b)| line >= *a && line <= *b))
+    }
+
+    /// Whether any line between `start` and `end` was touched.
+    pub fn overlaps(&self, file: &str, start: u32, end: u32) -> bool {
+        self.files
+            .get(file)
+            .is_some_and(|ranges| ranges.iter().any(|(a, b)| start <= *b && end >= *a))
+    }
+}
+
+impl MutationMap {
+    /// Record the diff a scoped run was limited to.
+    ///
+    /// Without this a symbol in a changed file but outside every hunk reports
+    /// as `not mutated`, which reads as "nothing could be mutated here" when
+    /// the truth is that the run never looked.
+    pub fn with_scope(mut self, scope: DiffScope) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use crate::symbol::{
+        LineSpan, ReturnShape, SelfKind, Symbol, SymbolKind, Triviality, Visibility,
+    };
+
+    fn symbol_at(file: &str, start: u32, end: u32) -> Symbol {
+        Symbol::new(
+            SymbolId::new(file, start as usize, 0),
+            format!("crate::{file}::f{start}"),
+            format!("f{start}"),
+            SymbolKind::Free,
+            LineSpan { start, end },
+            Visibility::Public,
+            SelfKind::None,
+            ReturnShape::Value,
+            false,
+            Triviality::Normal,
+        )
+    }
+
+    /// One hunk covering lines 40-44 of a file with symbols on either side.
+    fn scoped_map() -> MutationMap {
+        MutationMap {
+            mutated_files: ["src/claims.rs".to_string()].into_iter().collect(),
+            scope: Some(DiffScope::parse("+++ b/src/claims.rs\n@@ -38,3 +40,5 @@\n")),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_symbol_outside_every_hunk_is_out_of_scope_not_unmutatable() {
+        let map = scoped_map();
+        // Same file, and the file *was* mutated -- but this symbol sits well
+        // away from the change, so the run never considered it.
+        let untouched = symbol_at("src/claims.rs", 10, 20);
+        assert_eq!(
+            map.verification_of(&untouched),
+            Verification::OutOfScope,
+            "a symbol outside the diff must not report as having no mutant"
+        );
+    }
+
+    #[test]
+    fn a_symbol_overlapping_a_hunk_was_examined() {
+        let map = scoped_map();
+        // Spans 38-46, overlapping the 40-44 hunk: the run did look here, and
+        // producing no mutant is then a real statement about the signature.
+        let changed = symbol_at("src/claims.rs", 38, 46);
+        assert_eq!(map.verification_of(&changed), Verification::NotMutated);
+    }
+
+    #[test]
+    fn overlap_is_inclusive_at_both_hunk_edges() {
+        let map = scoped_map();
+        assert_eq!(
+            map.verification_of(&symbol_at("src/claims.rs", 30, 40)),
+            Verification::NotMutated,
+            "a symbol ending exactly on the first changed line overlaps"
+        );
+        assert_eq!(
+            map.verification_of(&symbol_at("src/claims.rs", 44, 50)),
+            Verification::NotMutated,
+            "a symbol starting exactly on the last changed line overlaps"
+        );
+        assert_eq!(
+            map.verification_of(&symbol_at("src/claims.rs", 45, 50)),
+            Verification::OutOfScope,
+            "one line past the hunk is outside it"
+        );
+    }
+
+    #[test]
+    fn an_unscoped_run_falls_back_to_file_granularity() {
+        let map = MutationMap {
+            mutated_files: ["src/claims.rs".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            map.verification_of(&symbol_at("src/claims.rs", 10, 20)),
+            Verification::NotMutated
+        );
+        assert_eq!(
+            map.verification_of(&symbol_at("src/lint.rs", 10, 20)),
+            Verification::OutOfScope
+        );
     }
 }

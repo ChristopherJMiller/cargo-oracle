@@ -247,35 +247,42 @@ fn main() -> Result<()> {
             mut cargo_args,
         } => {
             let root = PathBuf::from(&inventory.root);
+            // Kept so the map can record which regions the run actually
+            // examined -- see MutationMap::with_scope.
+            let mut scope_diff: Option<String> = None;
+
             let out_dir = match mutants_out {
                 Some(dir) => dir,
                 None => {
-                    // `--since` resolves to a diff file; `--in-diff` is one already.
                     let diff_file = match (&since, &in_diff) {
                         (Some(base), _) => {
                             let diff = mutation::diff_since(&root, base)?;
                             if !mutation::diff_touches_rust(&diff) {
-                                // A docs-only change has nothing to mutate. That
-                                // is a pass, not an empty report -- a CI gate
-                                // must not fail a README edit.
+                                // A docs-only change has nothing to mutate.
+                                // That is a pass, not an empty report -- a CI
+                                // gate must not fail a README edit.
                                 println!("no Rust source changed since {base}; nothing to verify");
                                 return Ok(());
                             }
-                            let path = root.join("target/oracle/since.diff");
-                            if let Some(parent) = path.parent() {
-                                std::fs::create_dir_all(parent)?;
-                            }
-                            std::fs::write(&path, &diff)?;
                             eprintln!(
-                                "scoped to {} changed file(s) since {base}",
+                                "scoped to {} changed Rust file(s) since {base}",
                                 mutation::files_in_diff(&diff)
                                     .iter()
                                     .filter(|f| f.ends_with(".rs"))
                                     .count()
                             );
+                            let path = root.join("target/oracle/since.diff");
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            std::fs::write(&path, &diff)?;
+                            scope_diff = Some(diff);
                             Some(path)
                         }
-                        (None, Some(path)) => Some(path.clone()),
+                        (None, Some(path)) => {
+                            scope_diff = std::fs::read_to_string(path).ok();
+                            Some(path.clone())
+                        }
                         (None, None) => None,
                     };
 
@@ -293,7 +300,10 @@ fn main() -> Result<()> {
             };
 
             let mutants = mutation::load(&out_dir)?;
-            let map = MutationMap::build(&inventory, &mutants);
+            let mut map = MutationMap::build(&inventory, &mutants);
+            if let Some(diff) = &scope_diff {
+                map = map.with_scope(mutation::DiffScope::parse(diff));
+            }
 
             let attribution = if with_attribution {
                 let tests = attribution::list_tests(&dir)?;

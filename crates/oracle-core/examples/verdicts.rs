@@ -21,10 +21,10 @@ fn main() -> anyhow::Result<()> {
     let map = MutationMap::build(&inv, &mutants);
 
     for symbol in inv.scorable() {
-        // `verification_in` distinguishes "examined and produced nothing" from
-        // "never looked at", which a run scoped by --file or --in-diff makes
-        // the common case. Plain `verification` cannot tell them apart.
-        let state = map.verification_in(&symbol.id, &symbol.id.file);
+        // `verification_of` distinguishes "examined and produced nothing" from
+        // "never looked at" -- at file granularity, and at hunk granularity for
+        // a --in-diff run. Plain `verification` cannot tell them apart.
+        let state = map.verification_of(symbol);
         if state == Verification::OutOfScope {
             continue;
         }
