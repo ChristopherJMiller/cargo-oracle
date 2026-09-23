@@ -407,9 +407,9 @@ impl Walker {
         symbol.is_unsafe = sig.unsafety.is_some();
 
         // Doctests attach to the item lexically: an exact claim, for free.
-        let fences = count_doctests(attrs);
-        symbol.doctests = fences;
-        for n in 0..fences {
+        let fences = extract_doctests(attrs);
+        symbol.doctests = fences.len();
+        for (n, code) in fences.iter().enumerate() {
             self.inv.tests.push(TestItem {
                 id: TestId {
                     file: self.file.clone(),
@@ -423,7 +423,7 @@ impl Walker {
                 should_panic: None,
                 enclosing_test_module: None,
                 doctest_target: Some(symbol.id.clone()),
-                body: None,
+                body: parse_doctest_body(code),
             });
         }
         symbol
@@ -527,9 +527,12 @@ fn should_panic_of(attrs: &[syn::Attribute]) -> Option<ShouldPanic> {
     })
 }
 
-/// Count fenced blocks in doc comments that rustdoc will actually run.
-/// `text` and `ignore` blocks are not compiled; `no_run` and `compile_fail` are.
-fn count_doctests(attrs: &[syn::Attribute]) -> usize {
+/// Extract the source of each fenced block rustdoc will actually compile.
+///
+/// `text`, `markdown` and `ignore` blocks are not compiled and yield nothing.
+/// Lines hidden with a leading `#` *are* compiled and run, so they are kept —
+/// dropping them would lose setup code that the assertions depend on.
+fn extract_doctests(attrs: &[syn::Attribute]) -> Vec<String> {
     let mut doc = String::new();
     for attr in attrs.iter().filter(|a| a.path().is_ident("doc")) {
         if let syn::Meta::NameValue(nv) = &attr.meta {
@@ -544,28 +547,58 @@ fn count_doctests(attrs: &[syn::Attribute]) -> usize {
         }
     }
 
-    let mut count = 0usize;
-    let mut open: Option<String> = None;
+    let mut out = Vec::new();
+    let mut current: Option<(bool, Vec<String>)> = None;
+
     for line in doc.lines() {
         let trimmed = line.trim_start();
-        let Some(info) = trimmed.strip_prefix("```") else {
-            continue;
-        };
-        match open.take() {
-            Some(_) => {} // closing fence
-            None => {
-                let info = info.trim().to_ascii_lowercase();
-                let runnable = !info
-                    .split(|c: char| c == ',' || c.is_whitespace())
-                    .any(|tok| matches!(tok, "text" | "ignore" | "markdown"));
-                if runnable {
-                    count += 1;
+        if let Some(info) = trimmed.strip_prefix("```") {
+            match current.take() {
+                Some((runnable, lines)) => {
+                    if runnable {
+                        out.push(lines.join("\n"));
+                    }
                 }
-                open = Some(info);
+                None => {
+                    let info = info.trim().to_ascii_lowercase();
+                    let runnable = !info
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .any(|tok| matches!(tok, "text" | "ignore" | "markdown"));
+                    current = Some((runnable, Vec::new()));
+                }
             }
+        } else if let Some((_, lines)) = current.as_mut() {
+            let code = if let Some(rest) = trimmed.strip_prefix("# ") {
+                rest
+            } else if trimmed == "#" {
+                ""
+            } else {
+                line
+            };
+            lines.push(code.to_string());
         }
     }
-    count
+    out
+}
+
+/// Turn doctest source into a block the oracle lint can read.
+///
+/// Doctests are real tests with real assertions; treating them as opaque would
+/// report every one of them as having no oracle.
+fn parse_doctest_body(code: &str) -> Option<syn::Block> {
+    // A snippet that declares its own `fn main` supplies the block directly.
+    if code.contains("fn main") {
+        let file: syn::File = syn::parse_str(code).ok()?;
+        return file.items.into_iter().find_map(|item| match item {
+            syn::Item::Fn(f) if f.sig.ident == "main" => Some(*f.block),
+            _ => None,
+        });
+    }
+    // Otherwise rustdoc wraps the snippet in a main function; do the same.
+    let wrapped = format!("fn __doctest() {{\n{code}\n}}");
+    syn::parse_str::<syn::ItemFn>(&wrapped)
+        .ok()
+        .map(|f| *f.block)
 }
 
 fn visibility_of(vis: &syn::Visibility) -> Visibility {

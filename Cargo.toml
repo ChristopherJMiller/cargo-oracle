@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/oracle-core", "crates/cargo-oracle"]
+exclude = ["crates/oracle-core/tests/fixtures"]
 
 [workspace.package]
 version = "0.1.0"

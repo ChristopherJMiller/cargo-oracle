@@ -1,0 +1,9 @@
+# A deliberately weak test suite, used as a fixture. `[workspace]` keeps it out
+# of the parent workspace so it is never built as part of `cargo test`.
+[workspace]
+
+[package]
+name = "weak-suite"
+version = "0.0.0"
+edition = "2021"
+publish = false
