@@ -1,14 +1,14 @@
-//! Slice v3: which tests would actually *fail* if a symbol broke.
+//! `verify`: which tests would actually *fail* if a symbol broke.
 //!
-//! This is the slice the other three exist to reach. Coverage says a symbol
+//! The stage the other three exist to reach. Coverage says a symbol
 //! ran; attribution says which test ran it; only mutation says whether anything
 //! would notice it breaking.
 //!
 //! # Why body replacement is the right operator here
 //!
 //! `cargo-mutants` replaces a function body with a type-appropriate default
-//! (`Ok(Default::default())`, `()`, `""`, `0`). That is *extreme mutation* — the
-//! same operator Descartes implements for Java to find pseudo-tested methods —
+//! (`Ok(Default::default())`, `()`, `""`, `0`). That is extreme mutation, the
+//! same operator Descartes implements for Java to find pseudo-tested methods,
 //! and it is the default behaviour of the mainstream Rust tool rather than a
 //! bolt-on. The logic is that if no test notices the entire body vanishing, no
 //! test will notice a subtler fault either.
@@ -18,7 +18,7 @@
 //! PIT mutates JVM bytecode in memory and runs thousands of mutants a minute.
 //! cargo-mutants must **recompile for every mutant**, so build and link dominate
 //! and test execution is the cheap half. This is why `--in-diff` is not an
-//! optimization here but the only practical way to run the slice on anything
+//! optimization here but the only practical way to run this stage on anything
 //! large.
 //!
 //! # Attribution caveat
@@ -44,7 +44,7 @@ pub enum MutantOutcome {
     Caught,
     /// Every test still passed with the body destroyed.
     Missed,
-    /// The mutant did not compile. Not a gap and not a pass — see
+    /// The mutant did not compile. Not a gap and not a pass. See
     /// [`Verification::NoViableMutant`].
     Unviable,
     /// The suite hung, usually because the mutation removed a loop's exit.
@@ -98,7 +98,7 @@ pub enum Verification {
     /// Viable mutants existed and every one survived. Covered, and unverified.
     PseudoTested,
     /// Every mutant failed to compile, so body replacement cannot score this.
-    /// Part type-enforcement, part operator weakness — see design.md.
+    /// Part type enforcement, part operator weakness. See design.md.
     NoViableMutant,
     /// cargo-mutants was in this file and generated nothing for this symbol.
     /// `-> Self` on a constructor is the common case: body replacement has no
@@ -184,7 +184,7 @@ pub struct MutationMap {
     /// symbols the inventory does not score. The per-symbol counts below cover
     /// only scorable symbols, so the two differ and the report says both.
     pub total_mutants: usize,
-    /// Mutants that fell in no inventory span — macro bodies, or code the
+    /// Mutants that fell in no inventory span: macro bodies, or code the
     /// inventory skipped. Reported rather than dropped.
     pub unattributed: Vec<Mutant>,
     /// Killer names from logs that matched no inventoried test.
@@ -267,7 +267,7 @@ impl MutationMap {
 
     /// The verdict for a symbol, given what the run actually examined.
     ///
-    /// Distinguishes "examined and produced nothing" from "never looked at" —
+    /// Distinguishes "examined and produced nothing" from "never looked at",
     /// at file granularity, and at hunk granularity when the run was scoped
     /// with `--in-diff`. Prefer this over [`MutationMap::verification`], which
     /// cannot tell the two apart.
@@ -716,7 +716,7 @@ pub fn diff_since(repo: &Path, base: &str) -> Result<String> {
 /// Which files a unified diff touches, as paths relative to the repository root.
 ///
 /// Used to tell "the diff changed nothing we can mutate" from "the diff changed
-/// Rust code but every mutant survived" — two very different reports.
+/// Rust code but every mutant survived", which are very different reports.
 ///
 /// ```
 /// use oracle_core::mutation::files_in_diff;
@@ -812,7 +812,7 @@ diff --git a/src/gone.rs b/src/gone.rs
 ///
 /// `--in-diff` scopes cargo-mutants at hunk granularity, not file granularity.
 /// Without this, a symbol in a changed file but outside every hunk gets no
-/// mutant and is indistinguishable from one the operator could not mutate —
+/// mutant and is indistinguishable from one the operator could not mutate.
 /// the report would say "no mutant exists for this signature" about code the
 /// run deliberately skipped.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -825,7 +825,7 @@ impl DiffScope {
     /// Parse a unified diff into the new-side lines it *adds*.
     ///
     /// Only `+` lines count. A hunk header's range includes context lines, and
-    /// cargo-mutants does not mutate on the strength of context — scoping by
+    /// cargo-mutants does not mutate on the strength of context, and scoping by
     /// the header would mark symbols adjacent to a change as examined when the
     /// run never considered them.
     ///

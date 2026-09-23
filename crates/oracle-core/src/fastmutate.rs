@@ -1,7 +1,7 @@
 //! Single-compile mutation: rewrite once, build once, run many.
 //!
-//! The premise of slice v3 is that cargo-mutants must recompile for every
-//! mutant, and in Rust that build dominates — a mutant costs seconds of
+//! The premise of `verify` is that cargo-mutants must recompile for every
+//! mutant, and in Rust that build dominates. A mutant costs seconds of
 //! compiler time for milliseconds of test time. This module takes the other
 //! side of the trade: compile *every* mutation in at once behind a runtime
 //! switch, then select one per test run with an environment variable.
@@ -16,7 +16,7 @@
 //! The rewrite inserts a guard immediately after each function body's opening
 //! brace, by byte offset, leaving every other character of the file untouched.
 //! Reprinting the parsed AST would be easier but renumbers every line, and line
-//! numbers are this project's join key — see [`crate::symbol`]. Keeping the
+//! numbers are this project's join key (see [`crate::symbol`]). Keeping the
 //! file byte-identical apart from the insertions means a `SymbolId` computed
 //! against the original tree still addresses the same code in the rewritten
 //! one.
@@ -163,7 +163,7 @@ pub fn byte_offset(text: &str, line: u32, col: u32) -> Option<usize> {
 
 /// The guard inserted at the top of a function body.
 ///
-/// `active` is checked first so a baseline run — no environment variable set —
+/// `active` is checked first so a baseline run, with no variable set,
 /// pays one integer comparison and skips the probe entirely.
 ///
 /// ```
@@ -514,7 +514,7 @@ pub fn patch_manifest(manifest: &Path, switch_path: &Path) -> Result<()> {
 /// Build the rewritten tree once, and confirm it passes with nothing active.
 ///
 /// A red baseline makes every later result meaningless, so this is checked
-/// before any mutant runs — the same guard cargo-mutants applies.
+/// before any mutant runs. cargo-mutants applies the same guard.
 pub fn run_baseline(dir: &Path) -> Result<()> {
     let status = Command::new("cargo")
         .current_dir(dir)
@@ -615,7 +615,7 @@ mod driver_tests {
     }
 }
 
-/// Whether a manifest is a virtual workspace root — `[workspace]` with no
+/// Whether a manifest is a virtual workspace root: `[workspace]` with no
 /// `[package]`.
 ///
 /// Such a manifest has no `[dependencies]` table to patch, and each member

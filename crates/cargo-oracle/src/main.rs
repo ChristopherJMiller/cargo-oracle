@@ -1,6 +1,6 @@
-//! `cargo oracle` — symbol-level test attribution for Rust.
+//! `cargo oracle`: symbol-level test attribution for Rust.
 //!
-//! Slice v0 is entirely static: it parses the workspace, works out which tests
+//! `lint` is entirely static: it parses the workspace, works out which tests
 //! claim which symbols, and reports the oracles that cannot discriminate. No
 //! build, no test run, no instrumentation.
 
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "cargo-oracle",
     version,
-    about = "Which tests verify which symbols — not just which lines ran",
+    about = "Which tests verify which symbols, not just which lines ran",
     long_about = None
 )]
 struct Cli {
@@ -285,7 +285,7 @@ fn main() -> Result<()> {
             }
 
             eprintln!(
-                "profiling {} test(s), one instrumented run each -- this is the expensive slice",
+                "profiling {} test(s), one instrumented run each; this is the expensive stage",
                 selected.len()
             );
             let scratch = PathBuf::from(&inventory.root).join("target/oracle");
@@ -358,7 +358,7 @@ fn main() -> Result<()> {
 
                     eprintln!(
                         "running `cargo mutants` -- one rebuild per mutant, so this is the \
-                         expensive slice"
+                         expensive stage"
                     );
                     mutation::run_mutants(&dir, &cargo_args)?
                 }

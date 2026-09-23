@@ -200,7 +200,7 @@ fn a_nested_fixture_crate_is_not_attributed_to_its_host_package() {
 }
 
 // ---------------------------------------------------------------------------
-// Slice v1: the coverage join
+// The coverage join
 // ---------------------------------------------------------------------------
 
 /// Real `cargo llvm-cov --json` output for the weak-suite fixture, with the
@@ -314,7 +314,7 @@ fn an_accessor_is_excluded_from_scoring_and_so_from_claims() {
 }
 
 // ---------------------------------------------------------------------------
-// Slice v3: mutation verification
+// Mutation verification
 // ---------------------------------------------------------------------------
 
 /// Real `cargo mutants` output for the weak-suite fixture: outcomes.json plus
@@ -376,13 +376,13 @@ fn orc010_predicted_the_pseudo_tested_symbol_before_any_mutant_ran() {
     let (inv, map) = fixture_mutation();
     let set_retries = sym(&inv, "set_retries");
 
-    // v3's evidence: the body was replaced with `()` and nothing failed.
+    // The mutation evidence: the body was replaced with `()` and nothing failed.
     let verdict = map.verdict(&set_retries.id);
     assert_eq!(verdict.verification(), Verification::PseudoTested);
     assert_eq!(verdict.missed, 1);
     assert!(verdict.killed_by.is_empty());
 
-    // v0's prediction, from the signature alone, at no build cost.
+    // The static prediction, from the signature alone, at no build cost.
     let claims = ClaimMap::build(&inv);
     let oracles = lint::analyze(&inv);
     let predicted = lint::shape_mismatches(&inv, &claims, &oracles);

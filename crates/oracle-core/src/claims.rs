@@ -1,4 +1,4 @@
-//! Which tests *claim* which symbols — computed statically, with no build.
+//! Which tests claim which symbols, computed statically with no build.
 //!
 //! In most languages "what does this test claim to test?" is a guess from a
 //! naming convention (`FooTest` speaks for `Foo`, probably). Rust encodes the
@@ -10,7 +10,7 @@
 //!   attribution, at zero cost.
 //!
 //! A claim is not evidence of anything. It is the denominator: the set a test
-//! has taken responsibility for, against which slices v1-v3 measure what it
+//! has taken responsibility for, against which the later stages measure what it
 //! actually executes and actually verifies. A wide gap between *claimed* and
 //! *verified* is the shape agent-written test suites take.
 
@@ -31,7 +31,7 @@ pub enum ClaimKind {
     NameSimilarity,
     /// An integration test in `tests/`, which can only reach the public API.
     /// Every `pub` symbol in the package is nominally in scope, so this claim
-    /// is broad enough to be near-worthless alone — it exists so that a symbol
+    /// is broad enough to be near-worthless alone. It exists so that a symbol
     /// reachable *only* this way is not reported as entirely unclaimed.
     IntegrationSurface,
 }

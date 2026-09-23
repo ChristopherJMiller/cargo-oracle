@@ -2,12 +2,12 @@
 //! Symbol-level test attribution for Rust: **would any test fail if this symbol
 //! stopped working?**
 //!
-//! Coverage answers *did this line run*. It structurally cannot answer *did
-//! anything check the result*. `oracle-core` is the library behind the
+//! Coverage answers whether a line ran. It cannot answer whether anything
+//! checked the result. `oracle-core` is the library behind the
 //! `cargo oracle` subcommand, and it answers the second question in four
-//! independently useful slices.
+//! independently useful stages.
 //!
-//! | Slice | Question | Evidence | Cost |
+//! | Stage | Question | Evidence | Cost |
 //! |---|---|---|---|
 //! | [`lint`] | Can this test's oracles fail at all? | [`syn`] parse | milliseconds, no build |
 //! | [`coverage`] | Which symbols run? | `cargo llvm-cov --json` | one instrumented build |
@@ -17,7 +17,7 @@
 //! # Symbol identity is a span, not a name
 //!
 //! Every tool this library joins against reports `file:line:col`, and none of
-//! them agree on names — llvm-cov emits mangled, monomorphized symbols;
+//! them agree on names. llvm-cov emits mangled, monomorphized symbols,
 //! cargo-mutants emits unmangled source names; [`syn`] sees only what was
 //! written. So names are never compared. Each report is placed by *containment*
 //! in a [`symbol::LineSpan`], which collapses monomorphized instantiations onto
@@ -39,7 +39,7 @@
 //!
 //! Each layer claims only what its evidence supports. [`lint`] and [`coverage`]
 //! never report a symbol as verified. [`mutation`] distinguishes three separate
-//! ways to be *unscorable*, none of which mean verified — see
+//! ways to be unscorable, and none of them mean verified. See
 //! [`mutation::Verification`].
 //!
 //! # Running the whole pipeline
@@ -49,7 +49,7 @@
 //! # fn main() -> anyhow::Result<()> {
 //! let inv = inventory::walk_workspace(std::path::Path::new("."))?;
 //!
-//! // v0: static, no build. Which oracles cannot discriminate?
+//! // Static, no build. Which oracles cannot discriminate?
 //! let report = Report::build(&inv);
 //! println!("{}", report.to_text(false, report::Styles::plain()));
 //!

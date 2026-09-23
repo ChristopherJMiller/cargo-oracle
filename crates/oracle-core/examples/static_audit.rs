@@ -1,4 +1,4 @@
-//! The v0 static audit, driven from the library rather than the CLI.
+//! The static audit, driven from the library rather than the CLI.
 //!
 //! Parses a workspace, works out which tests claim which symbols, and prints
 //! the tests whose oracles cannot discriminate. No build, no test run.

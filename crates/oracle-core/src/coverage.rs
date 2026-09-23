@@ -1,4 +1,4 @@
-//! Slice v1: which symbols actually run.
+//! `coverage`: which symbols actually run.
 //!
 //! `-C instrument-coverage` is unusual among coverage backends in being
 //! natively *function*-granular. `cargo llvm-cov --json` emits a `functions[]`
@@ -17,7 +17,7 @@
 //! - An entry starting *exactly* at a symbol's `fn` line is an **instantiation**
 //!   of it. A generic function produces one per monomorphization, and their
 //!   counts sum to the symbol's total executions.
-//! - An entry starting *inside* the body is **nested** — a closure, an `async`
+//! - An entry starting *inside* the body is nested: a closure, an `async`
 //!   block, a generator. Its count is tracked separately, because a closure that
 //!   never ran inside a function that did is a real and interesting signal, but
 //!   adding it to the parent's count would be meaningless.
@@ -35,7 +35,7 @@ use std::process::Command;
 /// One `functions[]` entry from the llvm-cov export, reduced to what we join on.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoverageFunction {
-    /// Mangled and monomorphized. Kept for diagnostics only — never joined on.
+    /// Mangled and monomorphized. Kept for diagnostics only, never joined on.
     pub name: String,
     /// How many times this entry was executed.
     pub count: u64,
@@ -85,7 +85,7 @@ impl SymbolCoverage {
 pub struct CoverageMap {
     /// Per-symbol execution evidence.
     pub symbols: BTreeMap<SymbolId, SymbolCoverage>,
-    /// Execution counts for inventoried test functions, which slice v2 builds on.
+    /// Execution counts for inventoried test functions, which per-test attribution builds on.
     pub tests: BTreeMap<TestId, u64>,
     /// Entries that matched no inventory span: macro expansions and derive
     /// output, which have no source definition of their own.
@@ -151,7 +151,7 @@ impl CoverageMap {
             }
 
             // Test functions are not symbols, but they are inventoried, and
-            // slice v2 needs their identities.
+            // per-test attribution needs their identities.
             if !placed {
                 if let Some(tests) = tests_by_file.get(func.file.as_str()) {
                     if let Some(test) = tests.iter().find(|t| t.span.contains(line)) {
@@ -266,7 +266,7 @@ pub fn parse(text: &str, workspace_root: &Path) -> Result<CoverageData> {
 
 /// Shell out to `cargo llvm-cov` to produce a fresh report.
 ///
-/// This runs the test suite under instrumentation, so it is the first slice
+/// This runs the test suite under instrumentation, so it is the first stage
 /// that costs a build.
 pub fn run_llvm_cov(manifest_dir: &Path, output: &Path, extra_args: &[String]) -> Result<()> {
     if let Some(parent) = output.parent() {

@@ -3,7 +3,7 @@
 //!
 //! cargo-mutants recompiles the crate for every mutant, and in Rust build and
 //! link dominate: a mutant costs seconds of compiler time and milliseconds of
-//! test time. This crate is the other half of the trade — every mutation is
+//! test time. This crate is the other half of that trade. Every mutation is
 //! compiled in *once*, behind a runtime switch, and selected by an environment
 //! variable. One build, then one test run per mutant.
 //!
@@ -25,12 +25,12 @@
 //! Body replacement needs a value of the return type, and not every return type
 //! implements [`Default`]. cargo-mutants can shrug that off: the mutant simply
 //! fails to compile and is reported as unviable. Single-compile mutation
-//! cannot — **one uncompilable default would break the entire build**, taking
+//! cannot: one uncompilable default breaks the entire build, taking
 //! every other mutant with it.
 //!
 //! [`default_for!`] resolves this with autoref specialization, which picks the
 //! [`Default`] implementation when the type has one and a `None` fallback when
-//! it does not — decided at compile time, with no trait bound on the caller and
+//! it does not. That is decided at compile time, with no bound on the caller and
 //! no nightly features. A type without `Default` yields `None`, the `if let`
 //! does not fire, and that mutant is inert rather than fatal. It is then
 //! reported as unviable, exactly as cargo-mutants would have.
@@ -59,7 +59,7 @@ pub const ENV: &str = "ORACLE_MUTANT";
 /// Reads [`ENV`] once and caches it: this sits on the hot path of every
 /// instrumented function, so it must not parse the environment per call.
 ///
-/// With no variable set — an ordinary `cargo test` of the rewritten tree —
+/// With no variable set, an ordinary `cargo test` of the rewritten tree,
 /// nothing is active and every function runs its real body. That is the
 /// baseline run, and it must pass before any mutant result means anything.
 pub fn active(id: u32) -> bool {

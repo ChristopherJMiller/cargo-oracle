@@ -1,9 +1,9 @@
-//! Slice v2: which *test* runs which symbol.
+//! `attribute`: which *test* runs which symbol.
 //!
-//! v1 answers "does anything execute this symbol". That is a bit per symbol,
+//! `coverage` answers "does anything execute this symbol". That is a bit per symbol,
 //! and a bit is not enough to say anything about an individual test. The edge
 //! `executes(test, symbol)` is what makes the per-test verdict possible, and it
-//! is the prerequisite for v3 attributing a mutation kill to the test that
+//! is the prerequisite for `verify` attributing a mutation kill to the test that
 //! caught it.
 //!
 //! # How the per-test profile is obtained
@@ -20,7 +20,7 @@
 //!
 //! The build is shared, so only the run, the `llvm-profdata` merge and the
 //! export repeat. That is still **O(tests)** and the dominant cost of this
-//! slice: it is a nightly job on a large suite, not a pre-commit hook. The
+//! stage: a nightly job on a large suite rather than a pre-commit hook. The
 //! intended fast path is to scope it to the tests touched by a diff, which
 //! bounds the cost by the size of the change rather than the size of the suite.
 
@@ -191,7 +191,7 @@ pub fn profile_one(
 /// nextest addresses a lib test as `config::tests::test_parse` while the
 /// inventory writes `mycrate::config::tests::test_parse`, so the nextest name
 /// is a suffix of ours. An integration test is a bare function name, which is
-/// only unique within its binary — when a name resolves to more than one
+/// only unique within its binary. When a name resolves to more than one
 /// inventoried test we record the ambiguity rather than guessing, because a
 /// wrong edge here is worse than a missing one.
 pub fn resolve(inv: &Inventory, test: &NextestId) -> Result<TestId, Ambiguity> {

@@ -1,6 +1,6 @@
 //! Can this test's oracles fail at all?
 //!
-//! Not *is there an assertion* — that question does not separate good tests
+//! Not whether an assertion exists, since that question does not separate good tests
 //! from bad ones. Empirical work on AI-authored test commits finds agent tests
 //! carry roughly twice the assertions of human ones while detecting fewer
 //! injected faults. Density is, if anything, an inverted signal.
@@ -588,7 +588,7 @@ impl Scan {
         });
     }
 
-    /// `assert!(cond)` — everything depends on what `cond` is.
+    /// `assert!(cond)`, where everything depends on what `cond` is.
     fn classify_condition(
         &mut self,
         cond: Option<&syn::Expr>,
@@ -659,7 +659,7 @@ impl Scan {
         }
     }
 
-    /// `assert_eq!(actual, expected)` — strong unless the two sides are the
+    /// `assert_eq!(actual, expected)`: strong unless the two sides are the
     /// same expression, or the expectation is computed by the code under test.
     fn classify_equality(&mut self, args: &[syn::Expr], mac: &syn::Macro) -> OracleStrength {
         let span = Span::of(mac);
@@ -890,7 +890,7 @@ fn called_names(expr: &syn::Expr) -> Vec<String> {
 ///
 /// This rule exists because Rust puts effects in the type. A `fn(&mut self)`
 /// communicates its result by mutating the receiver, so a test that only
-/// inspects return values is structurally blind to it — however many assertions
+/// inspects return values is structurally blind to it, however many assertions
 /// it contains and whatever its coverage says. Checking that is a matter of
 /// reading the signature, which no other language makes this easy.
 ///
@@ -968,7 +968,7 @@ fn identifiers(tokens: &str) -> Vec<String> {
 /// this pass consults the inventory afterwards.
 ///
 /// `Result<(), E>` is the shape of most fallible operations in Rust, so without
-/// this ORC002 fires constantly and wrongly — which is exactly what it did on
+/// this ORC002 fires constantly and wrongly, which is what it did on
 /// this crate's own suite.
 ///
 /// A name matching several symbols is resolved conservatively: the finding is

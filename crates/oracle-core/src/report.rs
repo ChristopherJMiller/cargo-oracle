@@ -1,9 +1,9 @@
 //! Assembling and rendering the audit.
 //!
-//! The v0 report is deliberately careful about what it claims. Everything here
+//! The static report is deliberately careful about what it claims. Everything here
 //! is static: it can say a test's oracles *cannot* discriminate, and it can say
-//! a symbol is claimed by nobody. It cannot say a symbol is verified — that
-//! needs the mutation evidence of slice v3. Reports that blur the two are how
+//! a symbol is claimed by nobody. It cannot say a symbol is verified. That
+//! needs the mutation evidence of `verify`. Reports that blur the two are how
 //! coverage numbers became untrustworthy in the first place.
 
 use crate::claims::ClaimMap;
@@ -43,7 +43,7 @@ pub struct Summary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-/// The v0 static audit: oracle findings and unclaimed symbols.
+/// The static audit: oracle findings and unclaimed symbols.
 pub struct Report {
     /// Absolute workspace root, so diagnostics can quote source lines.
     pub root: String,
@@ -310,32 +310,32 @@ fn plural(n: usize, noun: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Slice v1 rendering: execution state per symbol
+// Execution state per symbol
 // ---------------------------------------------------------------------------
 
 use crate::coverage::CoverageMap;
 use crate::symbol::Symbol;
 
-/// What v1 can say about a symbol. `Verified` is deliberately absent: proving a
-/// test would *fail* if the symbol broke needs the mutation evidence of v3, and
+/// What coverage alone can say about a symbol. `Verified` is deliberately absent: proving a
+/// test would *fail* if the symbol broke needs mutation evidence, and
 /// conflating "ran" with "checked" is how coverage numbers lost their meaning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExecutionState {
     /// No test runs it.
     Unexecuted,
-    /// A test claims it, but nothing runs it. The claim is unbacked — a
+    /// A test claims it, but nothing runs it. The claim is unbacked, a
     /// stronger finding than plain `Unexecuted`, because someone believed
     /// otherwise.
     ClaimedButUnexecuted,
-    /// Runs. Whether anything checks the result is a v3 question.
+    /// Runs. Whether anything checks the result needs `verify`.
     Executed,
-    /// Predicted to have no viable mutant, so v3 will not be able to score it.
+    /// Predicted to have no viable mutant, so `verify` cannot score it.
     ///
     /// This is a blind spot, not a guarantee. Some of it really is the type
     /// system carrying the contract (a return type with no meaningful
     /// `Default`); some of it is our mutation operator being too weak
-    /// (`-> impl Trait`, `const fn`). Only v3 can tell them apart, by
+    /// (`-> impl Trait`, `const fn`). Only `verify` can tell them apart, by
     /// reporting why cargo-mutants skipped the mutant.
     NoViableMutant,
 }
@@ -356,7 +356,7 @@ impl ExecutionState {
 /// Classify a symbol's execution state from coverage and claims.
 ///
 /// Never returns a "verified" state: whether anything *checks* the symbol
-/// needs the mutation evidence of slice v3.
+/// needs the mutation evidence of `verify`.
 pub fn execution_state(
     symbol: &Symbol,
     coverage: &CoverageMap,
@@ -379,7 +379,7 @@ pub fn execution_state(
     }
 }
 
-/// Render the v1 execution report.
+/// Render the execution report.
 ///
 /// `verbose` includes symbols that are simply executed, which are otherwise
 /// omitted so the gaps stand out.
@@ -472,7 +472,7 @@ pub fn render_coverage(inv: &Inventory, coverage: &CoverageMap, verbose: bool) -
 
     let _ = writeln!(
         out,
-        "\nexecution is not verification: `executed` means a test ran the symbol,\nnot that anything checked the result. that needs slice v3."
+        "\nexecution is not verification: `executed` means a test ran the symbol,\nnot that anything checked the result. that needs `cargo oracle verify`."
     );
     out
 }
@@ -625,16 +625,16 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// Slice v2 rendering: per-test attribution
+// Per-test attribution rendering
 // ---------------------------------------------------------------------------
 
 use crate::attribution::AttributionMap;
 
-/// The v2 headline: a test that reaches a lot of code with a weak oracle.
+/// A test that reaches a lot of code with a weak oracle.
 ///
-/// This is the closest thing to the v3 verdict that can be had without paying
+/// The closest thing to a verification verdict that can be had without paying
 /// for mutants. "Executes 34 symbols, strongest oracle is `is_ok()`" is not
-/// proof that it verifies nothing — only mutation is — but it is the precise
+/// proof that it verifies nothing, since only mutation proves that, but it is
 /// shape of a test that raises coverage without raising confidence, and it
 /// costs one instrumented run per test instead of one rebuild per mutant.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -673,7 +673,7 @@ pub fn reach_without_discrimination(
     out
 }
 
-/// Render the v2 per-test attribution report.
+/// Render the per-test attribution report.
 pub fn render_attribution(inv: &Inventory, attribution: &AttributionMap, verbose: bool) -> String {
     let claims = ClaimMap::build(inv);
     let oracles = lint::analyze(inv);
@@ -790,25 +790,25 @@ pub fn render_attribution(inv: &Inventory, attribution: &AttributionMap, verbose
 
     let _ = writeln!(
         out,
-        "\nexecution attribution is still not verification. `executes` names the\ntests that ran a symbol; which of them would *fail* if it broke is v3."
+        "\nexecution attribution is still not verification. `executes` names the\ntests that ran a symbol; which of them would *fail* if it broke needs `verify`."
     );
     out
 }
 
 // ---------------------------------------------------------------------------
-// Slice v3 rendering: the verification report
+// Verification report rendering
 // ---------------------------------------------------------------------------
 
 use crate::mutation::{MutationMap, Verification};
 
-/// The report the other three slices exist to produce.
+/// The report the other three stages exist to produce.
 ///
-/// Two things here cannot be said by any single slice alone. The first is the
-/// per-test verdict `executes N, verifies M`, which needs v2's attribution
-/// edges and v3's kill attribution together — it is the direct answer to "did
-/// this test actually check anything?". The second is the confirmation line:
-/// where ORC010 statically predicted a symbol could not be verified, v3 says
-/// whether it was right.
+/// Two things here cannot be said by any single stage alone. The first is the
+/// per-test verdict `executes N, verifies M`, which needs attribution edges and
+/// kill attribution together. It is the direct answer to "did this test check
+/// anything?". The second is the confirmation line: where ORC010 predicted
+/// statically that a symbol could not be verified, mutation says whether it
+/// was right.
 pub fn render_verification(
     inv: &Inventory,
     mutation: &MutationMap,

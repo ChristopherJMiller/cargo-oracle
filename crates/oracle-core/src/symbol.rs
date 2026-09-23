@@ -10,13 +10,13 @@
 //!   `parse::<String>`, ...), closures appear as `parse::{{closure}}`, and an
 //!   `async fn` appears as the state machine the compiler generated for it.
 //! - **cargo-mutants** reports the source path and the unmangled function name.
-//! - **`syn`** — our inventory — sees the written source and nothing else.
+//! - `syn`, which builds our inventory, sees the written source and nothing else.
 //!
 //! Reconciling mangled names across those three is a swamp. Definition spans
 //! are not: every tool emits one, and *containment* does the join for free.
 //! N monomorphized coverage entries all land inside the one source span that
 //! defined them, so instantiations collapse without any demangling. Code with
-//! no source span — derive output, macro expansions — falls outside every
+//! no source span, such as derive output and macro expansions, falls outside every
 //! inventory span and filters itself out, which is the behaviour we want.
 
 use serde::{Deserialize, Serialize};
@@ -135,7 +135,7 @@ pub enum ReturnShape {
     ResultLike,
     /// `-> Option<_>`
     OptionLike,
-    /// `-> impl Trait` — frequently *unmutatable*, since `Default` rarely applies.
+    /// `-> impl Trait`, frequently unmutatable since `Default` rarely applies.
     ImplTrait,
     /// Any other concrete return type.
     Value,
@@ -299,7 +299,7 @@ impl Symbol {
 
     /// `const fn` cannot host a runtime mutation switch, and `impl Trait`
     /// returns usually have no `Default`. Both show up as *unviable* mutants
-    /// rather than gaps — see the `type-enforced` state in the report.
+    /// rather than gaps. See the report's unscorable states.
     pub fn likely_unviable_to_mutate(&self) -> bool {
         self.is_const || matches!(self.returns, ReturnShape::ImplTrait | ReturnShape::Never)
     }

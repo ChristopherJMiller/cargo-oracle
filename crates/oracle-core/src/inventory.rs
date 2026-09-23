@@ -10,9 +10,9 @@
 //! nest further from there.
 //!
 //! The tradeoff is that a `.rs` file under `src/` that no `mod` declaration
-//! reaches — an orphan left behind by a refactor — still gets inventoried.
+//! reaches, such as an orphan left by a refactor, still gets inventoried.
 //! That is the safe direction to be wrong in for an audit tool, and the symbol
-//! will simply report as `unexecuted` once coverage lands in slice v1.
+//! will simply report as `unexecuted` once coverage runs.
 
 use crate::symbol::*;
 use anyhow::{Context, Result};
@@ -36,7 +36,7 @@ pub enum TestKind {
 }
 
 /// How a test is addressed. `path` is written to match `cargo nextest list`
-/// output so slice v2 can join per-test coverage profiles without a fuzzy match.
+/// output so per-test attribution can join coverage profiles without a fuzzy match.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TestId {
     /// Source file, relative to the workspace root.
@@ -79,7 +79,7 @@ pub struct TestItem {
     /// is the claim edge Rust gives us for free: a test module lives *inside*
     /// the file whose symbols it speaks for.
     pub enclosing_test_module: Option<String>,
-    /// For `Doctest`, the symbol the example is attached to — an exact claim.
+    /// For `Doctest`, the symbol the example is attached to. An exact claim.
     pub doctest_target: Option<SymbolId>,
     /// Retained for the oracle lint; never serialized.
     #[serde(skip)]
@@ -118,9 +118,9 @@ impl Inventory {
 /// Where a source file sits, which decides how its tests are classified.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FileRole {
-    /// Under `src/` — contains the symbols under audit.
+    /// Under `src/`: contains the symbols under audit.
     Source,
-    /// Under `tests/` — integration tests, claiming the public API.
+    /// Under `tests/`: integration tests, claiming the public API.
     IntegrationTest,
 }
 
@@ -294,7 +294,7 @@ impl Walker {
 
     fn module(&mut self, m: &syn::ItemMod) {
         let Some((_, items)) = &m.content else {
-            return; // `mod foo;` — the file walk reaches it separately.
+            return; // `mod foo;`, which the file walk reaches separately.
         };
         let name = m.ident.to_string();
         let was_test_module = self.test_module.clone();
@@ -517,7 +517,7 @@ impl Walker {
 // Attribute and signature inspection
 // ---------------------------------------------------------------------------
 
-/// `#[test]`, `#[tokio::test]`, `#[rstest]`, ... — anything whose final path
+/// `#[test]`, `#[tokio::test]`, `#[rstest]`, and anything whose final path
 /// segment names a test harness.
 fn attrs_mark_test(attrs: &[syn::Attribute]) -> bool {
     const HARNESSES: &[&str] = &[
@@ -577,7 +577,7 @@ fn should_panic_of(attrs: &[syn::Attribute]) -> Option<ShouldPanic> {
 /// Extract the source of each fenced block rustdoc will actually compile.
 ///
 /// `text`, `markdown` and `ignore` blocks are not compiled and yield nothing.
-/// Lines hidden with a leading `#` *are* compiled and run, so they are kept —
+/// Lines hidden with a leading `#` are compiled and run, so they are kept;
 /// dropping them would lose setup code that the assertions depend on.
 fn extract_doctests(attrs: &[syn::Attribute]) -> Vec<String> {
     let mut doc = String::new();
@@ -764,7 +764,7 @@ fn is_accessor_expr(expr: &syn::Expr) -> bool {
     }
 }
 
-/// Does this return type wrap `()` — `Result<(), E>` or `Option<()>`?
+/// Does this return type wrap `()`, as `Result<(), E>` or `Option<()>` do?
 ///
 /// Such a success case carries no payload, so a `is_ok()`/`is_some()` check on
 /// it is a complete oracle rather than a discriminant-only one. `Result<(), E>`
