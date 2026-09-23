@@ -32,7 +32,7 @@ the symbol identity that v0 establishes.
 | **v2** attribution | Which *test* runs which symbol? | `cargo-nextest`, one profile per test | N profiles + merges |
 | **v3** verification | Which test *fails* when the symbol's body is destroyed? | `cargo-mutants` | one rebuild per mutant |
 
-v0 and v1 are implemented. v2 and v3 are sketched below so the data model does
+v0, v1 and v2 are implemented. v3 is sketched below so the data model does
 not have to change to accept them.
 
 ## Symbol identity is a span, not a name
@@ -141,6 +141,64 @@ does. The join is correct either way and the counts sum to total executions, but
 the number cannot be read as an instantiation count — an earlier version of the
 report labelled it that way and was wrong on every non-generic function in the
 workspace.
+
+## Slice v2: per-test attribution
+
+v1 answers "does anything execute this symbol" — a bit per symbol. A bit says
+nothing about an *individual* test, and the individual test is the unit an audit
+of agent-written code actually cares about. v2 turns that bit into an edge:
+`executes(test, symbol)`.
+
+`cargo-nextest` makes this possible without any cooperation from the test
+harness, because it runs every test in its own process. So a profile can be
+isolated per test:
+
+```text
+for each test T:
+    cargo llvm-cov clean --profraw-only --workspace
+    cargo llvm-cov nextest --no-report -E 'test(=T)'
+    cargo llvm-cov report --json
+```
+
+The build is shared; only the run, the `llvm-profdata` merge and the export
+repeat. That is still **O(tests)**, and it is the dominant cost of this slice —
+a nightly job on a large suite, not a pre-commit hook. The intended fast path is
+`--tests` to scope to what a diff touched, which bounds cost by the size of the
+change rather than the size of the suite.
+
+### Resolving nextest names to inventoried tests
+
+nextest addresses a lib test as `config::tests::test_parse`, while the inventory
+writes `mycrate::config::tests::test_parse`. The nextest name is a *suffix* of
+ours, matched on a `::` boundary so `test_parse` cannot match
+`test_parse_extended`.
+
+Integration tests are addressed by a bare function name, unique only within
+their binary. When a name resolves to more than one inventoried test the edge is
+recorded as **ambiguous and skipped**, never guessed. A wrong attribution edge
+is worse than a missing one: a missing edge understates coverage, a wrong one
+credits a test with verifying something it never touched.
+
+### Reach without discrimination
+
+The v2 headline is the closest thing to a v3 verdict that can be had without
+paying for mutants:
+
+```
+broad reach, no discrimination -- these run a lot of code and check almost none of it
+  mycrate::tests::test_end_to_end     executes  34, strongest oracle: weak
+```
+
+This is not proof that the test verifies nothing — only mutation proves that.
+But "executes 34 symbols, strongest oracle is `is_ok()`" is the exact shape of a
+test that raises coverage without raising confidence, and it costs one
+instrumented run per test rather than one rebuild per mutant.
+
+Two more views fall out of the edge set for free:
+
+- **Executed by no test** — an exact, per-symbol version of the v1 gap.
+- **Executed by exactly one test** — a single point of failure. If that test is
+  deleted or skipped, the symbol silently becomes unexercised.
 
 ## The claim map
 

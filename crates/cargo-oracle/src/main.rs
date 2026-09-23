@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use oracle_core::attribution;
 use oracle_core::claims::ClaimMap;
 use oracle_core::coverage::{self, CoverageMap};
 use oracle_core::inventory::walk_workspace;
@@ -71,6 +72,18 @@ enum Command {
         /// Extra arguments forwarded to `cargo llvm-cov`, after `--`.
         #[arg(last = true)]
         cargo_args: Vec<String>,
+    },
+    /// Per-test attribution: which test executes which symbol.
+    ///
+    /// Profiles the suite once per test, so cost is O(tests). Scope it with
+    /// --tests on anything large.
+    Attribute {
+        /// Only profile tests whose name contains this substring.
+        #[arg(long, value_name = "SUBSTRING")]
+        tests: Option<String>,
+        /// List what would be profiled, and stop.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// The full audit: inventory, claims, and oracle findings.
     Report {
@@ -158,6 +171,44 @@ fn main() -> Result<()> {
                 Format::Text => {
                     print!("{}", report::render_coverage(&inventory, &map, cli.verbose))
                 }
+            }
+            0
+        }
+
+        Command::Attribute { tests, dry_run } => {
+            let listed = attribution::list_tests(&dir)?;
+            let selected: Vec<_> = listed
+                .into_iter()
+                .filter(|t| tests.as_ref().is_none_or(|f| t.testcase.contains(f)))
+                .collect();
+
+            if selected.is_empty() {
+                eprintln!("no tests matched");
+                return Ok(());
+            }
+            if dry_run {
+                for t in &selected {
+                    println!("{}  {}", t.binary_id, t.testcase);
+                }
+                println!("\n{} test(s) would be profiled", selected.len());
+                return Ok(());
+            }
+
+            eprintln!(
+                "profiling {} test(s), one instrumented run each -- this is the expensive slice",
+                selected.len()
+            );
+            let scratch = PathBuf::from(&inventory.root).join("target/oracle");
+            let map = attribution::build(&inventory, &dir, &scratch, &selected, |i, n, t| {
+                eprintln!("  [{i}/{n}] {}", t.testcase);
+            })?;
+
+            match cli.format {
+                Format::Json => println!("{}", serde_json::to_string_pretty(&map)?),
+                Format::Text => print!(
+                    "{}",
+                    report::render_attribution(&inventory, &map, cli.verbose)
+                ),
             }
             0
         }

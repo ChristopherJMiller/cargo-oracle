@@ -64,6 +64,8 @@ cargo oracle inventory            # symbols and the oracle shape each requires
 cargo oracle claims               # which tests speak for which symbols
 cargo oracle coverage             # which symbols actually run (builds + runs tests)
 cargo oracle coverage --coverage-json report.json   # reuse an existing report
+cargo oracle attribute            # which test runs which symbol (O(tests), slow)
+cargo oracle attribute --tests parse --dry-run     # scope it first
 cargo oracle --format json lint   # machine-readable
 ```
 
@@ -76,8 +78,10 @@ Built in slices, each independently useful.
 - **v1 — execution** ✅ : function-level coverage from `cargo llvm-cov --json`,
   joined to the inventory by definition span. Separates monomorphized entries
   from nested closures, and `claimed, not run` from plain `unexecuted`.
-- **v2 — per-test attribution**: `cargo-nextest`'s process-per-test model gives
-  one profile per test, so *executes* becomes an edge rather than a bit.
+- **v2 — per-test attribution** ✅ : `cargo-nextest`'s process-per-test model
+  gives one profile per test, so *executes* becomes an edge rather than a bit.
+  Surfaces tests with broad reach and no discrimination, symbols no test
+  reaches, and symbols only one test reaches.
 - **v3 — verification**: `cargo-mutants` body-replacement mutants, with kills
   attributed back to the individual test that caught them.
 

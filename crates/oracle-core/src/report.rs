@@ -7,7 +7,7 @@
 //! coverage numbers became untrustworthy in the first place.
 
 use crate::claims::ClaimMap;
-use crate::inventory::{Inventory, TestKind};
+use crate::inventory::{Inventory, TestId, TestKind};
 use crate::lint::{self, Finding, OracleStrength, Severity, TestOracles};
 use crate::symbol::Triviality;
 use serde::{Deserialize, Serialize};
@@ -516,6 +516,81 @@ mod tests {
         assert_eq!(ExecutionState::Executed.label(), "executed");
     }
 
+    fn oracles_for(entries: &[(&str, OracleStrength)]) -> Vec<TestOracles> {
+        entries
+            .iter()
+            .map(|(path, strength)| TestOracles {
+                test: TestId {
+                    file: "src/lib.rs".into(),
+                    line: 1,
+                    path: (*path).into(),
+                },
+                strength: *strength,
+                sites: Vec::new(),
+                findings: Vec::new(),
+                receiver_calls: Vec::new(),
+                asserted_idents: Default::default(),
+            })
+            .collect()
+    }
+
+    fn attribution_with(entries: &[(&str, usize)]) -> AttributionMap {
+        let mut map = AttributionMap::default();
+        for (path, count) in entries {
+            let test = TestId {
+                file: "src/lib.rs".into(),
+                line: 1,
+                path: (*path).into(),
+            };
+            let symbols = (0..*count)
+                .map(|i| crate::symbol::SymbolId::new("src/lib.rs", i + 1, 0))
+                .collect();
+            map.executes.insert(test, symbols);
+        }
+        map
+    }
+
+    #[test]
+    fn broad_reach_with_a_weak_oracle_is_flagged_and_ranked_by_reach() {
+        let attribution = attribution_with(&[("wide", 34), ("narrow", 4)]);
+        let oracles = oracles_for(&[
+            ("wide", OracleStrength::Weak),
+            ("narrow", OracleStrength::Weak),
+        ]);
+
+        let flagged = reach_without_discrimination(&attribution, &oracles, 3);
+        assert_eq!(flagged.len(), 2);
+        assert_eq!(flagged[0].test.path, "wide", "widest reach is ranked first");
+        assert_eq!(flagged[0].symbols_executed, 34);
+    }
+
+    #[test]
+    fn a_strong_oracle_is_never_flagged_however_much_it_executes() {
+        let attribution = attribution_with(&[("wide", 90)]);
+        let oracles = oracles_for(&[("wide", OracleStrength::Strong)]);
+        assert!(
+            reach_without_discrimination(&attribution, &oracles, 3).is_empty(),
+            "reach is only a problem when nothing discriminates"
+        );
+    }
+
+    #[test]
+    fn a_weak_oracle_below_the_reach_threshold_is_not_flagged() {
+        let attribution = attribution_with(&[("tiny", 2)]);
+        let oracles = oracles_for(&[("tiny", OracleStrength::Weak)]);
+        assert!(reach_without_discrimination(&attribution, &oracles, 3).is_empty());
+    }
+
+    #[test]
+    fn a_test_with_no_attribution_data_is_skipped_not_counted_as_zero() {
+        let attribution = AttributionMap::default();
+        let oracles = oracles_for(&[("unprofiled", OracleStrength::None)]);
+        assert!(
+            reach_without_discrimination(&attribution, &oracles, 0).is_empty(),
+            "a test we never profiled must not be reported as reaching nothing"
+        );
+    }
+
     #[test]
     fn wrap_indents_continuation_lines_and_respects_the_width() {
         let text = "the quick brown fox jumps over the lazy dog again and again";
@@ -528,4 +603,166 @@ mod tests {
             "continuations carry the indent: {lines:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Slice v2 rendering: per-test attribution
+// ---------------------------------------------------------------------------
+
+use crate::attribution::AttributionMap;
+
+/// The v2 headline: a test that reaches a lot of code with a weak oracle.
+///
+/// This is the closest thing to the v3 verdict that can be had without paying
+/// for mutants. "Executes 34 symbols, strongest oracle is `is_ok()`" is not
+/// proof that it verifies nothing — only mutation is — but it is the precise
+/// shape of a test that raises coverage without raising confidence, and it
+/// costs one instrumented run per test instead of one rebuild per mutant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReachWithoutDiscrimination {
+    pub test: TestId,
+    pub symbols_executed: usize,
+    pub strength: OracleStrength,
+}
+
+pub fn reach_without_discrimination(
+    attribution: &AttributionMap,
+    oracles: &[TestOracles],
+    min_symbols: usize,
+) -> Vec<ReachWithoutDiscrimination> {
+    let mut out: Vec<ReachWithoutDiscrimination> = oracles
+        .iter()
+        .filter(|o| o.strength <= OracleStrength::Weak)
+        .filter_map(|o| {
+            let executed = attribution.symbols_for(&o.test)?.len();
+            (executed >= min_symbols).then_some(ReachWithoutDiscrimination {
+                test: o.test.clone(),
+                symbols_executed: executed,
+                strength: o.strength,
+            })
+        })
+        .collect();
+    out.sort_by_key(|r| std::cmp::Reverse(r.symbols_executed));
+    out
+}
+
+pub fn render_attribution(inv: &Inventory, attribution: &AttributionMap, verbose: bool) -> String {
+    let claims = ClaimMap::build(inv);
+    let oracles = lint::analyze(inv);
+    let by_test: BTreeMap<&TestId, &TestOracles> = oracles.iter().map(|o| (&o.test, o)).collect();
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "per-test attribution\n  {:<52} {:>5} {:>6}  {:<8} FINDINGS",
+        "TEST", "EXEC", "CLAIM", "ORACLE"
+    );
+
+    let mut rows: Vec<(&TestId, usize, usize, OracleStrength, String)> = Vec::new();
+    for (test, symbols) in &attribution.executes {
+        let claimed = claims.claimed_by(test).len();
+        let oracle = by_test.get(test);
+        let strength = oracle.map(|o| o.strength).unwrap_or(OracleStrength::None);
+        let findings = oracle
+            .map(|o| {
+                o.findings
+                    .iter()
+                    .map(|f| f.rule.id())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        rows.push((test, symbols.len(), claimed, strength, findings));
+    }
+    // Weakest oracle first, then widest reach: the tests most worth looking at.
+    rows.sort_by(|a, b| a.3.cmp(&b.3).then(b.1.cmp(&a.1)));
+
+    for (test, executed, claimed, strength, findings) in &rows {
+        let _ = writeln!(
+            out,
+            "  {:<52} {:>5} {:>6}  {:<8} {}",
+            truncate(&test.path, 52),
+            executed,
+            claimed,
+            format!("{strength:?}").to_lowercase(),
+            findings
+        );
+    }
+
+    // Symbols nothing executes, and symbols only one test executes.
+    let mut unreached = Vec::new();
+    let mut single = Vec::new();
+    for symbol in inv.scorable() {
+        match attribution.tests_for(&symbol.id).map(|t| t.len()) {
+            None | Some(0) => unreached.push(symbol),
+            Some(1) => single.push(symbol),
+            _ => {}
+        }
+    }
+
+    if !unreached.is_empty() {
+        let _ = writeln!(out, "\nexecuted by no test ({})", unreached.len());
+        for s in unreached.iter().take(if verbose { usize::MAX } else { 12 }) {
+            let _ = writeln!(out, "  {}", leaf_path(&s.path));
+        }
+    }
+    if !single.is_empty() && verbose {
+        let _ = writeln!(
+            out,
+            "\nexecuted by exactly one of the profiled tests ({}) -- a single point of failure",
+            single.len()
+        );
+        for s in &single {
+            let tests = attribution.tests_for(&s.id);
+            let who = tests
+                .and_then(|t| t.iter().next())
+                .map(|t| leaf(&t.path))
+                .unwrap_or("?");
+            let _ = writeln!(out, "  {:<46} {}", leaf_path(&s.path), who);
+        }
+    }
+
+    if !attribution.unmatched_tests.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{} nextest name(s) matched no inventoried test:",
+            attribution.unmatched_tests.len()
+        );
+        for name in attribution.unmatched_tests.iter().take(8) {
+            let _ = writeln!(out, "  {name}");
+        }
+    }
+    if !attribution.ambiguous_tests.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{} nextest name(s) matched several inventoried tests and were skipped:",
+            attribution.ambiguous_tests.len()
+        );
+        for name in attribution.ambiguous_tests.iter().take(8) {
+            let _ = writeln!(out, "  {name}");
+        }
+    }
+
+    let broad = reach_without_discrimination(attribution, &oracles, 3);
+    if !broad.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nbroad reach, no discrimination -- these run a lot of code and check almost none of it"
+        );
+        for r in &broad {
+            let _ = writeln!(
+                out,
+                "  {:<52} executes {:>3}, strongest oracle: {}",
+                truncate(&r.test.path, 52),
+                r.symbols_executed,
+                format!("{:?}", r.strength).to_lowercase()
+            );
+        }
+    }
+
+    let _ = writeln!(
+        out,
+        "\nexecution attribution is still not verification. `executes` names the\ntests that ran a symbol; which of them would *fail* if it broke is v3."
+    );
+    out
 }

@@ -10,6 +10,7 @@
 //! Slices v1-v3 (coverage, per-test attribution, mutation verification) join
 //! onto [`symbol::SymbolId`] and are added as further modules.
 
+pub mod attribution;
 pub mod claims;
 pub mod coverage;
 pub mod inventory;
