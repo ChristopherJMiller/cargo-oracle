@@ -177,3 +177,21 @@ fn the_whole_fixture_suite_grades_out_as_weak() {
         "three of the four unit tests should be flagged"
     );
 }
+
+#[test]
+fn a_nested_fixture_crate_is_not_attributed_to_its_host_package() {
+    // `tests/fixtures/weak-suite` is a crate of its own living inside
+    // oracle-core's `tests/` tree. Walking oracle-core must not adopt it.
+    let host = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let inv = walk_workspace(host).expect("oracle-core must parse");
+
+    assert!(
+        !inv.files.iter().any(|f| f.contains("fixtures/weak-suite")),
+        "fixture files leaked into the host inventory: {:?}",
+        inv.files
+    );
+    assert!(
+        !inv.tests.iter().any(|t| t.id.path.contains("set_retries")),
+        "fixture tests were attributed to oracle_core"
+    );
+}

@@ -132,10 +132,16 @@ pub fn walk_workspace(manifest_dir: &Path) -> Result<Inventory> {
             if !dir.is_dir() {
                 continue;
             }
-            for entry in walkdir::WalkDir::new(&dir)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
+            // A directory with its own Cargo.toml is a separate package -- a
+            // test fixture crate, or something vendored. Its symbols belong to
+            // that package, so prune the subtree rather than adopting it here.
+            let walker = walkdir::WalkDir::new(&dir).into_iter().filter_entry(|e| {
+                !(e.file_type().is_dir()
+                    && e.path() != dir.as_path()
+                    && e.path().join("Cargo.toml").is_file())
+            });
+
+            for entry in walker.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("rs") {
                     continue;
