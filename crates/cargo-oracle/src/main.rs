@@ -1,1 +1,3 @@
-fn main() { println!("cargo-oracle"); }
+fn main() {
+    println!("cargo-oracle");
+}
