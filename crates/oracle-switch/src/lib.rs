@@ -212,3 +212,54 @@ mod tests {
         assert!(!super::active(17));
     }
 }
+
+/// Environment variable naming a file the switch appends outcomes to.
+pub const LOG_ENV: &str = "ORACLE_MUTANT_LOG";
+
+/// What happened when an active mutation was reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Note {
+    /// The default existed and was returned: the mutation really took effect.
+    Applied,
+    /// The return type has no `Default`, so the mutation could not be made.
+    /// Equivalent to cargo-mutants reporting the mutant unviable.
+    Inert,
+}
+
+impl Note {
+    /// The word written to the log.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Note::Applied => "applied",
+            Note::Inert => "inert",
+        }
+    }
+}
+
+/// Record that an active mutation was reached, and whether it took effect.
+///
+/// This is what lets the driver tell three cases apart that cargo-mutants
+/// reports as one:
+///
+/// | Note | Tests | Meaning |
+/// |---|---|---|
+/// | `applied` | passed | a genuine survivor: the body was destroyed and nothing noticed |
+/// | `inert` | passed | no `Default` for the return type; unviable, not unverified |
+/// | *(none)* | passed | no test ever called the function |
+///
+/// Appends one word per occurrence to the file named by [`LOG_ENV`]. Failures
+/// are swallowed: instrumentation must never change whether a test passes.
+pub fn note(note: Note) {
+    use std::io::Write;
+
+    let Ok(path) = std::env::var(LOG_ENV) else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{}", note.as_str());
+    }
+}

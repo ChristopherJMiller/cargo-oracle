@@ -1,0 +1,25 @@
+--- src/config.rs
++++ replace redact -> String with String::new()
+@@ -39,21 +39,17 @@
+     let (host, port) = s.split_once(':').ok_or("missing port")?;
+     let port: u16 = port.parse().map_err(|_| "bad port".to_string())?;
+     Ok(Config::new(host, port))
+ }
+ 
+ /// Real logic that no test ever calls. The same-file `mod tests` claims it,
+ /// which makes it `claimed-but-unexecuted` rather than merely unclaimed.
+ pub fn redact(s: &str) -> String {
+-    if s.len() > 3 {
+-        format!("{}***", &s[..3])
+-    } else {
+-        "***".to_string()
+-    }
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn test_parse() {

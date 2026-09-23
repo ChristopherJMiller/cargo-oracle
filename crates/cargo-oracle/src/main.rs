@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use oracle_core::attribution;
 use oracle_core::claims::ClaimMap;
 use oracle_core::coverage::{self, CoverageMap};
+use oracle_core::fastmutate::{self, FastOutcome, Plan};
 use oracle_core::inventory::walk_workspace;
 use oracle_core::lint::Severity;
 use oracle_core::mutation::{self, MutationMap};
@@ -110,6 +111,24 @@ enum Command {
         /// Extra arguments forwarded to `cargo mutants`, after `--`.
         #[arg(last = true)]
         cargo_args: Vec<String>,
+    },
+    /// Experimental: single-compile mutation.
+    ///
+    /// Rewrites the crate once with every mutation behind a runtime switch,
+    /// builds once, then runs the suite once per mutant. Trades cargo-mutants'
+    /// N rebuilds for N test runs, which is the better deal in Rust where the
+    /// build dominates. Narrower than `verify`: body replacement only.
+    Fastverify {
+        /// Where to write the rewritten tree.
+        #[arg(long, value_name = "DIR")]
+        scratch: Option<PathBuf>,
+        /// Show the plan, including what is skipped and why, then stop.
+        #[arg(long)]
+        dry_run: bool,
+        /// Path to the `oracle-switch` crate. Defaults to the copy that was
+        /// built alongside this binary.
+        #[arg(long, value_name = "DIR")]
+        switch_path: Option<PathBuf>,
     },
     /// The full audit: inventory, claims, and oracle findings.
     Report {
@@ -332,6 +351,110 @@ fn main() -> Result<()> {
                     )
                 ),
             }
+            0
+        }
+
+        Command::Fastverify {
+            scratch,
+            dry_run,
+            switch_path,
+        } => {
+            let root = PathBuf::from(&inventory.root);
+            let plan = Plan::build(&inventory);
+
+            if dry_run {
+                for mutant in &plan.mutants {
+                    println!(
+                        "{:>4}  {:<52} {}",
+                        mutant.id, mutant.path, mutant.replacement
+                    );
+                }
+                let mut reasons: std::collections::BTreeMap<&str, usize> = Default::default();
+                for (_, reason) in &plan.skipped {
+                    *reasons.entry(reason.label()).or_default() += 1;
+                }
+                println!("\n{} mutant(s) planned", plan.mutants.len());
+                for (reason, n) in reasons {
+                    println!("  {n} skipped: {reason}");
+                }
+                return Ok(());
+            }
+            if plan.mutants.is_empty() {
+                println!("nothing to mutate");
+                return Ok(());
+            }
+
+            let scratch = scratch.unwrap_or_else(|| root.join("target/oracle/fast"));
+            // The rewritten tree needs an absolute path to the switch crate.
+            // It lives next to this binary's own crate in the cargo-oracle
+            // workspace, which is where it is by default; an installed binary
+            // has no such sibling, so --switch-path overrides.
+            let switch = switch_path.unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .map(|p| p.join("oracle-switch"))
+                    .unwrap_or_default()
+            });
+            if !switch.join("Cargo.toml").is_file() {
+                anyhow::bail!(
+                    "no oracle-switch crate at {}. Pass --switch-path to point at it.",
+                    switch.display()
+                );
+            }
+
+            eprintln!(
+                "rewriting {} function(s) into {}",
+                plan.mutants.len(),
+                scratch.display()
+            );
+            let manifest_text = std::fs::read_to_string(root.join("Cargo.toml"))?;
+            if fastmutate::is_virtual_workspace(&manifest_text) {
+                anyhow::bail!(
+                    "fastverify does not yet support virtual workspaces: every member \
+                     needs the switch dependency added separately. Point \
+                     --manifest-path at a single crate."
+                );
+            }
+
+            fastmutate::rewrite_tree(&root, &scratch, &inventory, &plan)?;
+            fastmutate::patch_manifest(&scratch.join("Cargo.toml"), &switch)?;
+
+            eprintln!("building once, and checking the baseline is green...");
+            fastmutate::run_baseline(&scratch)?;
+
+            let log = scratch.join("oracle-notes.log");
+            let mut outcomes = Vec::new();
+            for mutant in &plan.mutants {
+                eprint!(
+                    "  [{}/{}] {} ... ",
+                    mutant.id + 1,
+                    plan.mutants.len(),
+                    mutant.path
+                );
+                let outcome = fastmutate::run_mutant(&scratch, mutant.id, &log)?;
+                eprintln!("{}", outcome.label());
+                outcomes.push((mutant, outcome));
+            }
+
+            println!();
+            for (mutant, outcome) in &outcomes {
+                if *outcome == FastOutcome::Caught {
+                    continue;
+                }
+                println!("  {:<52} {}", mutant.path, outcome.label());
+            }
+
+            let count = |want: FastOutcome| outcomes.iter().filter(|(_, o)| *o == want).count();
+            println!(
+                "\nsummary\n  caught      {}\n  SURVIVED    {}\n  inert       {} (no Default for the return type)\n  unreached   {} (no test calls it)",
+                count(FastOutcome::Caught),
+                count(FastOutcome::Survived),
+                count(FastOutcome::Inert),
+                count(FastOutcome::Unreached),
+            );
+            println!(
+                "\nexperimental: body replacement only, and `unreached` is a distinction\n`cargo oracle verify` cannot make. Use verify for the authoritative answer."
+            );
             0
         }
 

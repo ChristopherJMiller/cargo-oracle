@@ -416,3 +416,94 @@ On this workspace, a one-function change:
 | `--since HEAD` | 2 | 18 seconds |
 
 That is the difference between a nightly job and a PR gate.
+
+## Single-compile mutation (experimental)
+
+`cargo oracle fastverify` takes the other side of Rust's cost trade. Instead of
+rewriting and rebuilding per mutant, it compiles *every* mutation in at once
+behind a runtime switch and selects one per test run:
+
+```text
+cargo-mutants:  N × (rewrite + build + test)
+fastverify:     1 × (rewrite + build) + N × test
+```
+
+This is the approach [mutagen] pioneered and [muttest] continues. What follows
+is what it took to make it work on stable Rust.
+
+### The build-poisoning problem
+
+Body replacement needs a value of the return type, and not every type
+implements `Default`. cargo-mutants shrugs this off — the mutant fails to
+compile and is reported unviable. Single-compile mutation cannot: **one
+uncompilable default breaks the entire build and takes every other mutant with
+it**.
+
+`oracle_switch::default_for!` resolves this with autoref specialization: two
+traits with the same method, one implemented for `&Probe<T>` under a `Default`
+bound and one for `Probe<T>` without, invoked through two autorefs so the bounded
+arm is reached first when it applies. Stable Rust, no nightly, no bound on the
+caller. A type with no `Default` yields `None`, its mutation is inert rather than
+fatal, and it is reported unviable exactly as cargo-mutants would.
+
+Getting the autoref count wrong by one makes the fallback win for *every* type,
+silently disabling every mutant — the guard fires, the probe returns `None`,
+nothing changes, and every test passes. That failure mode looks like a
+suspiciously healthy codebase, which is why the switch crate tests both arms
+explicitly.
+
+### Two type-level traps
+
+- **`Result<T, E>` has no `Default`.** There is no reason to prefer `Ok` over
+  `Err`, so std does not implement it. Probing the return type directly would
+  make every fallible function inert — most of a Rust codebase. The rewriter
+  probes the *success* type and wraps in `Ok`, which is what cargo-mutants
+  generates.
+- **`Option<T>` needs no special case.** `impl<T> Default for Option<T>` is
+  unconditional, so the probe already yields `None` for any `T`.
+
+### Textual insertion, to preserve the join key
+
+The guard is inserted by byte offset immediately after each body's opening
+brace, leaving the rest of the file untouched. Reprinting the parsed AST would
+be far easier but renumbers every line — and line numbers are this project's
+join key. Keeping files byte-identical apart from the insertions means a
+`SymbolId` computed against the original tree still addresses the same code in
+the rewritten one.
+
+### One thing it can report that cargo-mutants cannot
+
+The switch writes a note when an active mutation is *reached*, which separates
+three cases cargo-mutants reports as two:
+
+| Note | Tests | Verdict |
+|---|---|---|
+| `applied` | passed | a genuine survivor: the body was destroyed and nothing noticed |
+| `inert` | passed | no `Default` for the return type; unviable |
+| *(none)* | passed | **no test ever called the function** |
+
+That last row is a real distinction. cargo-mutants reports an unreached function
+and a badly-tested one identically, as a missed mutant.
+
+On the fixture crate, fastverify also mutates `Config::new` — which returns
+`Self` — where cargo-mutants generates nothing, because the probe finds that
+`Config: Default`.
+
+### Honest limitations
+
+- **Virtual workspaces are unsupported.** Every member needs the switch
+  dependency added separately; the command refuses rather than producing a tree
+  that will not build.
+- **Body replacement only.** cargo-mutants also mutates binary operators, and
+  those mutants are often the interesting ones on well-tested code.
+- **The measured win is small on small crates.** On the fixture: 7s for 10
+  cargo-mutants mutants versus 2s for 5 fastverify mutants — 0.7s against 0.4s
+  per mutant. The advantage is proportional to build time, and the fixture
+  builds in about a second. It has not been demonstrated on a crate where a
+  build takes twenty seconds, which is exactly where it should matter most, and
+  that is the next thing to measure rather than assert.
+
+`cargo oracle verify` remains the authoritative command.
+
+[mutagen]: https://github.com/llogiq/mutagen
+[muttest]: https://github.com/samuelpilz/muttest-rs

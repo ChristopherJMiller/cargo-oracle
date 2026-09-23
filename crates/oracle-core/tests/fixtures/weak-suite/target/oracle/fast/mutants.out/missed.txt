@@ -1,0 +1,9 @@
+src/config.rs:21:9: replace Config::host -> &str with ""
+src/config.rs:21:9: replace Config::host -> &str with "xyzzy"
+src/config.rs:27:9: replace Config::set_retries with ()
+src/config.rs:31:9: replace Config::validate -> Result<(), String> with Ok(())
+src/config.rs:47:5: replace redact -> String with String::new()
+src/config.rs:47:5: replace redact -> String with "xyzzy".into()
+src/config.rs:47:16: replace > with == in redact
+src/config.rs:47:16: replace > with < in redact
+src/config.rs:47:16: replace > with >= in redact

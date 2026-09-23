@@ -119,6 +119,7 @@ cargo oracle attribute --tests parse --dry-run     # scope it first
 cargo oracle verify --since origin/main            # mutate only what the branch changed
 cargo oracle verify --in-diff pr.diff              # or supply the diff yourself
 cargo oracle verify --with-attribution            # adds the per-test verdict
+cargo oracle fastverify --dry-run                 # experimental: one build, N runs
 cargo oracle --format json lint   # machine-readable
 ```
 
@@ -141,6 +142,13 @@ Built in slices, each independently useful.
   predictions v0 made for free.
 
 All four slices are implemented and each runs on its own.
+
+`cargo oracle fastverify` is an experimental fifth: it compiles every mutation
+in at once behind a runtime switch, so the cost is one build plus N test runs
+rather than N builds. It can also report a symbol as *unreached* rather than
+*missed*, a distinction cargo-mutants cannot make. See
+[docs/design.md](docs/design.md) for how it avoids one uncompilable default
+breaking the whole build -- and for its limitations, which are real.
 
 ## Library use
 

@@ -73,6 +73,7 @@
 pub mod attribution;
 pub mod claims;
 pub mod coverage;
+pub mod fastmutate;
 pub mod inventory;
 pub mod lint;
 pub mod mutation;
