@@ -808,12 +808,17 @@ pub fn render_verification(
 
         for symbol in symbols {
             let verdict = mutation.verdict(&symbol.id);
-            let verification = verdict.verification();
+            let verification = mutation.verification_in(&symbol.id, &symbol.id.file);
             *counts.entry(verification).or_default() += 1;
             caught += verdict.caught;
             missed += verdict.missed;
             unviable += verdict.unviable;
 
+            // Out-of-scope symbols carry no information; listing them buries
+            // the findings under the rest of the workspace.
+            if verification == Verification::OutOfScope && !verbose {
+                continue;
+            }
             if !verbose && verification == Verification::Verified {
                 continue;
             }
@@ -843,6 +848,7 @@ pub fn render_verification(
                 Verification::NoViableMutant => {
                     format!("{} would not compile", plural(verdict.unviable, "mutant"))
                 }
+                Verification::OutOfScope => "this run did not examine this file".to_string(),
                 Verification::NotMutated => {
                     // Body replacement has no default for every return type --
                     // `-> Self` on a constructor, most notably. That makes the
@@ -962,11 +968,12 @@ pub fn render_verification(
     let scored = get(Verification::Verified) + get(Verification::PseudoTested);
     let _ = writeln!(
         out,
-        "summary\n  verified          {}\n  PSEUDO-TESTED     {}\n  no viable mutant  {}\n  not mutated       {}",
+        "summary\n  verified          {}\n  PSEUDO-TESTED     {}\n  no viable mutant  {}\n  not mutated       {}\n  out of scope      {} (not examined by this run)",
         get(Verification::Verified),
         get(Verification::PseudoTested),
         get(Verification::NoViableMutant),
         get(Verification::NotMutated),
+        get(Verification::OutOfScope),
     );
     if scored > 0 {
         let _ = writeln!(

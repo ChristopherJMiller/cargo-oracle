@@ -93,8 +93,14 @@ pub enum Verification {
     /// Every mutant failed to compile, so body replacement cannot score this.
     /// Part type-enforcement, part operator weakness — see design.md.
     NoViableMutant,
-    /// cargo-mutants generated nothing here.
+    /// cargo-mutants was in this file and generated nothing for this symbol.
+    /// `-> Self` on a constructor is the common case: body replacement has no
+    /// default to substitute. Unscorable, not unverified.
     NotMutated,
+    /// The run never covered this file at all -- scoped with --file or
+    /// --in-diff. Says nothing whatsoever about the symbol, and must never be
+    /// confused with a symbol the run examined and found nothing for.
+    OutOfScope,
 }
 
 impl Verification {
@@ -104,6 +110,7 @@ impl Verification {
             Verification::PseudoTested => "PSEUDO-TESTED",
             Verification::NoViableMutant => "no viable mutant",
             Verification::NotMutated => "not mutated",
+            Verification::OutOfScope => "out of scope",
         }
     }
 }
@@ -146,6 +153,9 @@ pub struct MutationMap {
     pub unattributed: Vec<Mutant>,
     /// Killer names from logs that matched no inventoried test.
     pub unresolved_killers: BTreeSet<String>,
+    /// Files the run generated at least one mutant for. A symbol outside these
+    /// was not examined, which is a different statement from finding nothing.
+    pub mutated_files: BTreeSet<String>,
 }
 
 impl MutationMap {
@@ -161,6 +171,10 @@ impl MutationMap {
                 .entry(symbol.id.file.as_str())
                 .or_default()
                 .push(symbol);
+        }
+
+        for mutant in mutants {
+            map.mutated_files.insert(mutant.file.clone());
         }
 
         for mutant in mutants {
@@ -207,6 +221,18 @@ impl MutationMap {
 
     pub fn verdict(&self, id: &SymbolId) -> SymbolVerdict {
         self.verdicts.get(id).cloned().unwrap_or_default()
+    }
+
+    /// The verdict for a symbol, given what the run actually examined.
+    ///
+    /// `file` decides between "examined and produced nothing" and "never
+    /// looked at", which a scoped run makes the common case.
+    pub fn verification_in(&self, id: &SymbolId, file: &str) -> Verification {
+        match self.verdicts.get(id) {
+            Some(verdict) => verdict.verification(),
+            None if self.mutated_files.contains(file) => Verification::NotMutated,
+            None => Verification::OutOfScope,
+        }
     }
 
     pub fn verification(&self, id: &SymbolId) -> Verification {
@@ -373,8 +399,45 @@ pub fn killers_from_log(log: &str) -> Vec<String> {
     found
 }
 
-/// Run cargo-mutants. Exit code 1 means surviving mutants, which is a result,
-/// not a failure.
+/// Interpret a cargo-mutants exit status.
+///
+/// The codes are easy to get backwards, and getting them backwards is
+/// expensive in both directions: treating 2 as fatal aborts every run that
+/// finds something, and treating 4 as success reports a whole crate as
+/// unverified when really the baseline suite was already red.
+///
+/// | Code | Meaning | Ours |
+/// |------|---------|------|
+/// | 0 | every viable mutant caught | result |
+/// | 2 | some mutants survived | result -- the interesting case |
+/// | 3 | some tests timed out | result, with a warning |
+/// | 1 | usage error | error |
+/// | 4 | baseline already failing, nothing was tested | error |
+/// | 5, 6 | `--in-diff` does not apply to this tree | error |
+/// | 70 | internal error | error |
+pub fn classify_exit(code: Option<i32>) -> Result<()> {
+    match code {
+        Some(0) | Some(2) => Ok(()),
+        Some(3) => {
+            eprintln!(
+                "warning: some mutants timed out; they are reported as neither caught nor missed"
+            );
+            Ok(())
+        }
+        Some(1) => bail!("`cargo mutants` usage error -- check the arguments passed after `--`"),
+        Some(4) => bail!(
+            "the test suite is already failing before any mutation, so nothing was tested. \
+             Fix the baseline first: `cargo nextest run`"
+        ),
+        Some(5) => bail!("the `--in-diff` diff does not match the working tree"),
+        Some(6) => bail!("the `--in-diff` file is not a valid diff"),
+        Some(70) => bail!("`cargo mutants` hit an internal error; see mutants.out/debug.log"),
+        Some(other) => bail!("`cargo mutants` exited with an unrecognized code {other}"),
+        None => bail!("`cargo mutants` was terminated by a signal"),
+    }
+}
+
+/// Run cargo-mutants, returning the output directory it wrote.
 pub fn run_mutants(manifest_dir: &Path, extra_args: &[String]) -> Result<PathBuf> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(manifest_dir)
@@ -386,12 +449,7 @@ pub fn run_mutants(manifest_dir: &Path, extra_args: &[String]) -> Result<PathBuf
          or enter the nix dev shell)",
     )?;
 
-    match status.code() {
-        // 0: all caught. 1: some survived -- the interesting case.
-        Some(0) | Some(1) => {}
-        Some(code) => bail!("`cargo mutants` exited with {code}"),
-        None => bail!("`cargo mutants` was terminated by a signal"),
-    }
+    classify_exit(status.code())?;
 
     Ok(manifest_dir.join("mutants.out"))
 }
@@ -432,6 +490,71 @@ error: test run failed
     #[test]
     fn a_log_with_no_failure_names_nobody() {
         assert!(killers_from_log("all good\n3 passed\n").is_empty());
+    }
+
+    #[test]
+    fn surviving_mutants_are_a_result_not_a_failure() {
+        // Code 2 is what a run that finds something returns. Treating it as
+        // fatal would abort exactly the runs worth reading.
+        assert!(classify_exit(Some(2)).is_ok());
+        assert!(classify_exit(Some(0)).is_ok());
+        assert!(
+            classify_exit(Some(3)).is_ok(),
+            "timeouts are reported, not fatal"
+        );
+    }
+
+    #[test]
+    fn a_failing_baseline_is_an_error_not_an_unverified_crate() {
+        // Code 4 means nothing was mutated at all. Reporting it as success
+        // would mark every symbol in the crate unverified on the strength of
+        // an unrelated red test.
+        let err = classify_exit(Some(4)).unwrap_err().to_string();
+        assert!(err.contains("already failing"), "unhelpful: {err}");
+        assert!(
+            err.contains("nextest run"),
+            "should say how to fix it: {err}"
+        );
+    }
+
+    #[test]
+    fn usage_and_diff_errors_are_distinguished_from_results() {
+        assert!(classify_exit(Some(1))
+            .unwrap_err()
+            .to_string()
+            .contains("usage"));
+        assert!(classify_exit(Some(5))
+            .unwrap_err()
+            .to_string()
+            .contains("working tree"));
+        assert!(classify_exit(Some(6))
+            .unwrap_err()
+            .to_string()
+            .contains("valid diff"));
+        assert!(classify_exit(None)
+            .unwrap_err()
+            .to_string()
+            .contains("signal"));
+    }
+
+    #[test]
+    fn a_symbol_in_an_unexamined_file_is_out_of_scope_not_unscorable() {
+        let mut map = MutationMap::default();
+        map.mutated_files.insert("src/claims.rs".into());
+
+        let examined = SymbolId::new("src/claims.rs", 10, 0);
+        let untouched = SymbolId::new("src/lint.rs", 10, 0);
+
+        // Same absence of a verdict, two very different meanings: a scoped run
+        // must not report the rest of the workspace as having no mutant.
+        assert_eq!(
+            map.verification_in(&examined, "src/claims.rs"),
+            Verification::NotMutated
+        );
+        assert_eq!(
+            map.verification_in(&untouched, "src/lint.rs"),
+            Verification::OutOfScope
+        );
     }
 
     #[test]

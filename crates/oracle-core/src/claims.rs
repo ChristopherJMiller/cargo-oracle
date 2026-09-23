@@ -233,6 +233,98 @@ fn tokenize(name: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::symbol::Symbol;
+
+    fn symbol_named(name: &str) -> Symbol {
+        Symbol::new(
+            SymbolId::new("src/config.rs", 1, 0),
+            format!("mycrate::config::{name}"),
+            name.to_string(),
+            crate::symbol::SymbolKind::Free,
+            crate::symbol::LineSpan { start: 1, end: 9 },
+            Visibility::Public,
+            crate::symbol::SelfKind::None,
+            crate::symbol::ReturnShape::Value,
+            false,
+            crate::symbol::Triviality::Normal,
+        )
+    }
+
+    #[test]
+    fn a_test_name_containing_every_symbol_token_claims_it() {
+        let symbol = symbol_named("validate_config");
+        assert!(name_claims("test_validate_config_rejects_empty", &symbol));
+        assert!(name_claims("validate_config", &symbol));
+    }
+
+    #[test]
+    fn a_test_name_missing_a_symbol_token_does_not_claim_it() {
+        let symbol = symbol_named("validate_config");
+        assert!(
+            !name_claims("test_validate_host", &symbol),
+            "`config` is absent, so this test does not speak for `validate_config`"
+        );
+        assert!(!name_claims("test_parse", &symbol));
+    }
+
+    #[test]
+    fn a_very_short_symbol_name_never_claims_by_similarity() {
+        // `id` would otherwise match half the test suite.
+        let symbol = symbol_named("id");
+        assert!(!name_claims("test_id_roundtrip", &symbol));
+    }
+
+    #[test]
+    fn a_symbol_named_only_of_noise_words_claims_nothing() {
+        let symbol = symbol_named("test");
+        assert!(!name_claims("test_anything", &symbol));
+    }
+
+    #[test]
+    fn claimed_by_returns_only_this_test_s_symbols() {
+        let mine = TestId {
+            file: "src/config.rs".into(),
+            line: 1,
+            path: "mycrate::tests::mine".into(),
+        };
+        let theirs = TestId {
+            file: "src/config.rs".into(),
+            line: 2,
+            path: "mycrate::tests::theirs".into(),
+        };
+        let a = SymbolId::new("src/config.rs", 10, 0);
+        let b = SymbolId::new("src/config.rs", 20, 0);
+
+        let map = ClaimMap {
+            claims: vec![
+                Claim {
+                    test: mine.clone(),
+                    symbol: a.clone(),
+                    kind: ClaimKind::SameFileTestModule,
+                },
+                Claim {
+                    test: theirs.clone(),
+                    symbol: b.clone(),
+                    kind: ClaimKind::SameFileTestModule,
+                },
+            ],
+        };
+
+        let claimed = map.claimed_by(&mine);
+        assert_eq!(claimed.len(), 1);
+        assert!(claimed.contains(&a));
+        assert!(
+            !claimed.contains(&b),
+            "another test's claim must not leak in"
+        );
+        assert!(map
+            .claimed_by(&TestId {
+                file: "x".into(),
+                line: 9,
+                path: "nobody".into()
+            })
+            .is_empty());
+    }
 
     #[test]
     fn tokenize_splits_snake_and_camel_and_drops_noise() {

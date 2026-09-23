@@ -252,7 +252,8 @@ these is a place where a gap could be laundered into a reassurance:
 |---|---|---|
 | `PSEUDO-TESTED` | Viable mutants, all survived | — this is a real finding |
 | `no viable mutant` | Mutant did not compile | Not "type-enforced". Partly the type system, partly our operator being weak |
-| `not mutated` | cargo-mutants generated nothing | **Unscorable, not unverified** |
+| `not mutated` | cargo-mutants examined the file and generated nothing | **Unscorable, not unverified** |
+| `out of scope` | The run never examined the file (`--file`, `--in-diff`) | Nothing at all. Not evidence in either direction |
 
 The last one is not hypothetical. In the fixture crate, `Config::new` returns
 `Self` and cargo-mutants produces no mutant for it at all — body replacement has
@@ -369,3 +370,7 @@ not always hold.
 - Doctests are not included in coverage unless `cargo llvm-cov --doctests` is
   passed, so a symbol covered *only* by a doctest currently reports as
   unexecuted.
+- A mutation run scoped with `--file` or `--in-diff` leaves most of the
+  workspace unexamined. Those symbols report `out of scope`, which is tracked
+  separately from `not mutated` — conflating them would report an unexamined
+  crate as one with no mutants available.
