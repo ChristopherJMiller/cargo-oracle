@@ -819,19 +819,37 @@ pub fn render_verification(
             if verification == Verification::OutOfScope && !verbose {
                 continue;
             }
-            if !verbose && verification == Verification::Verified {
+            if !verbose && verification == Verification::Verified && verdict.missed == 0 {
                 continue;
             }
 
             let detail = match verification {
                 Verification::Verified => {
                     let who: Vec<&str> = verdict.killed_by.iter().map(|t| leaf(&t.path)).collect();
-                    if who.is_empty() {
-                        "caught, killer not identified in the log".to_string()
+                    let by = match who.len() {
+                        0 => "caught, killer not identified in the log".to_string(),
+                        1..=2 => format!("by {}", who.join(", ")),
+                        n => format!("by {}, +{} more", who[..2].join(", "), n - 2),
+                    };
+                    // `verified` means at least one mutant was caught, not that
+                    // every one was. Survivors here are finer-grained gaps --
+                    // an off-by-one boundary, a flipped operator -- and hiding
+                    // them would overstate what the evidence supports.
+                    if verdict.missed > 0 {
+                        format!(
+                            "{by} ({} still {})",
+                            plural(verdict.missed, "mutant"),
+                            if verdict.missed == 1 {
+                                "survives"
+                            } else {
+                                "survive"
+                            }
+                        )
                     } else {
-                        format!("by {}", who.join(", "))
+                        by
                     }
                 }
+
                 Verification::PseudoTested => {
                     let survivors: Vec<String> = verdict
                         .survivors

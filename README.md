@@ -52,6 +52,56 @@ types, so `fn set_retries(&mut self, n: u8)` announces that its result lives in
 the receiver — and a test that calls it and never mentions `c` again is
 *structurally* blind to it, no matter how many assertions it has.
 
+### And what v3 says, with evidence
+
+```
+$ cargo oracle verify --with-attribution
+
+src/config.rs
+  Config::new           not mutated       no mutant exists for this signature -- unscorable, not unverified
+  Config::set_retries   PSEUDO-TESTED     1 mutant survived: ()
+                        ^ predicted by ORC010 -- `c.set_retries(..)` mutates `c`, which no assertion observes
+  Config::validate      PSEUDO-TESTED     1 mutant survived: Ok(())
+  config::parse         verified          by parse_extracts_host_and_port
+  config::redact        PSEUDO-TESTED     5 mutants survived: String::new(), "xyzzy".into(), ==
+                        ^ no test executes it at all
+
+per-test verdict
+  TEST                                          EXECUTES  VERIFIES
+  weak_suite::config::tests::test_parse                2         0  <- runs code, verifies none of it
+  weak_suite::config::tests::test_validate             2         0  <- runs code, verifies none of it
+  weak_suite::config::tests::test_set_retries          2         0  <- runs code, verifies none of it
+  weak_suite::config::tests::parse_extracts_ho~        2         1
+```
+
+Two lines there need all four slices at once.
+
+`executes 2, verifies 0` is the question this project started from, answered
+directly — and no other tool reports mutation score per *test*.
+
+`predicted by ORC010` is the argument for building it in layers. The static rule
+costs milliseconds and no build; the mutation evidence costs a rebuild per
+mutant. When the cheap check calls it correctly, you run that on every commit
+and save the expensive one for the diff.
+
+## Honesty about evidence
+
+Each slice claims only what its evidence supports. v0 and v1 never report a
+symbol as *verified*. v3 never reports an unscorable symbol as a passing one —
+and there are **three** distinct ways to be unscorable, none of which mean
+verified:
+
+| State | Cause |
+|---|---|
+| `no viable mutant` | The mutant did not compile. Partly type enforcement, partly our operator being weak — not a guarantee |
+| `not mutated` | cargo-mutants examined the file and produced nothing for this signature (`-> Self` on a constructor) |
+| `out of scope` | The run never examined this file at all (`--file`, `--in-diff`) |
+
+That last distinction is not pedantry. Scoping a run to one file leaves the rest
+of the workspace unexamined, and an earlier version reported all of it as "no
+mutant exists" — a gap laundered into a reassurance, which is precisely the
+failure that makes coverage numbers untrustworthy.
+
 ## Usage
 
 ```sh
@@ -89,15 +139,14 @@ Built in slices, each independently useful.
   per-test `executes N, verifies M` verdict, and confirms or refutes the ORC010
   predictions v0 made for free.
 
-Each slice is honest about what its evidence supports. v0 and v1 never claim a
-symbol is *verified*; v3 never reports an unscorable symbol as a passing one.
-There are three distinct ways to be unscorable and none of them mean "verified"
-— see [docs/design.md](docs/design.md).
+All four slices are implemented and each runs on its own.
 
 ## Documentation
 
 - [docs/design.md](docs/design.md) — why symbol identity is a definition span,
-  the four symbol states, and why Rust's mutation cost model is inverted.
+  what each symbol state does and does not claim, how each slice joins onto the
+  next, and why Rust's mutation cost model is inverted relative to every other
+  ecosystem.
 - [docs/oracle-lints.md](docs/oracle-lints.md) — every rule, with the pattern it
   catches and the three that were deliberately *not* made rules.
 
