@@ -47,7 +47,7 @@
 //! - `Option<T>` needs nothing special: `impl<T> Default for Option<T>` is
 //!   unconditional, so the probe already yields `None` for any `T`.
 //!
-//! [`cargo-oracle`]: https://github.com/chrismiller/cargo-oracle
+//! [`cargo-oracle`]: https://github.com/ChristopherJMiller/cargo-oracle
 
 use std::sync::OnceLock;
 
