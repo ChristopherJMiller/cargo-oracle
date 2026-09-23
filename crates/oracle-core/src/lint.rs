@@ -902,6 +902,25 @@ mod tests {
     }
 
     #[test]
+    fn an_assertion_in_expression_position_is_still_an_oracle() {
+        // No trailing semicolon, so this is the block's tail expression --
+        // syn's `Expr::Macro`, a different node from the `Stmt::Macro` that
+        // every semicolon-terminated assertion produces. cargo-oracle itself
+        // reported this path as claimed-but-never-run.
+        let o = analyze_src(r#"fn t() { assert_eq!(cfg.port, 8080) }"#);
+        assert!(rules(&o).is_empty(), "unexpected findings: {:?}", rules(&o));
+        assert_eq!(o.strength, OracleStrength::Strong);
+        assert_eq!(o.sites.len(), 1);
+        assert_eq!(o.sites[0].kind, "assert_eq!");
+    }
+
+    #[test]
+    fn a_tautology_in_expression_position_is_still_caught() {
+        let o = analyze_src(r#"fn t() { assert!(true) }"#);
+        assert_eq!(rules(&o), vec![Rule::TautologicalAssert]);
+    }
+
+    #[test]
     fn every_rule_has_a_distinct_id_and_an_explanation() {
         let all = [
             Rule::NoOracle,

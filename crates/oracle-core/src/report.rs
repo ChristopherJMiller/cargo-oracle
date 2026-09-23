@@ -470,3 +470,62 @@ fn leaf_path(path: &str) -> &str {
         None => path,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaf_path_keeps_the_last_two_segments() {
+        assert_eq!(leaf_path("mycrate::config::Config::new"), "Config::new");
+        assert_eq!(leaf_path("mycrate::config::parse"), "config::parse");
+        assert_eq!(leaf_path("solo"), "solo");
+    }
+
+    #[test]
+    fn leaf_path_does_not_split_a_trait_impl_path_on_its_inner_separator() {
+        // Cutting `<SymbolId as fmt::Display>::fmt` on "::" boundaries leaves
+        // the meaningless tail `Display>::fmt`.
+        assert_eq!(
+            leaf_path("oracle_core::symbol::<SymbolId as fmt::Display>::fmt"),
+            "<SymbolId as fmt::Display>::fmt"
+        );
+    }
+
+    #[test]
+    fn truncate_marks_the_cut_and_leaves_short_strings_alone() {
+        assert_eq!(truncate("abcdef", 10), "abcdef");
+        assert_eq!(truncate("abcdef", 4), "abc~");
+        assert_eq!(truncate("abcdef", 4).chars().count(), 4);
+    }
+
+    #[test]
+    fn plural_agrees_the_noun_with_the_count() {
+        assert_eq!(plural(1, "accessor"), "1 accessor");
+        assert_eq!(plural(0, "accessor"), "0 accessors");
+        assert_eq!(plural(2, "accessor"), "2 accessors");
+    }
+
+    #[test]
+    fn execution_state_labels_are_readable_not_debug_formatted() {
+        assert_eq!(
+            ExecutionState::ClaimedButUnexecuted.label(),
+            "claimed, not run"
+        );
+        assert_eq!(ExecutionState::NoViableMutant.label(), "no viable mutant");
+        assert_eq!(ExecutionState::Executed.label(), "executed");
+    }
+
+    #[test]
+    fn wrap_indents_continuation_lines_and_respects_the_width() {
+        let text = "the quick brown fox jumps over the lazy dog again and again";
+        let wrapped = wrap(text, 4, 30);
+        let lines: Vec<&str> = wrapped.split('\n').collect();
+        assert!(lines.len() > 1, "long text must wrap");
+        assert!(lines[0].len() <= 30);
+        assert!(
+            lines[1..].iter().all(|l| l.starts_with("    ")),
+            "continuations carry the indent: {lines:?}"
+        );
+    }
+}
