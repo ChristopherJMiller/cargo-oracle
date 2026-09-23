@@ -99,10 +99,7 @@ fn main() -> Result<()> {
             match cli.format {
                 Format::Json => println!("{}", serde_json::to_string_pretty(&inventory.symbols)?),
                 Format::Text => {
-                    println!(
-                        "{:<52} {:<12} {:<13} {}",
-                        "SYMBOL", "KIND", "NEEDS", "NOTES"
-                    );
+                    println!("{:<52} {:<12} {:<13} NOTES", "SYMBOL", "KIND", "NEEDS");
                     for s in &inventory.symbols {
                         if !cli.verbose && !s.triviality.is_scorable() {
                             continue;
