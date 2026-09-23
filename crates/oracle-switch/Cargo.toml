@@ -1,0 +1,10 @@
+[package]
+name = "oracle-switch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runtime support for cargo-oracle's single-compile mutation mode"
+
+[dependencies]

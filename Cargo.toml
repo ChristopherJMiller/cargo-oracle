@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/oracle-core", "crates/cargo-oracle"]
+members = ["crates/oracle-core", "crates/cargo-oracle", "crates/oracle-switch"]
 exclude = ["crates/oracle-core/tests/fixtures"]
 
 [workspace.package]
@@ -13,6 +13,7 @@ description = "Symbol-level test attribution for Rust: which tests verify which 
 
 [workspace.dependencies]
 oracle-core = { path = "crates/oracle-core", version = "0.1.0" }
+oracle-switch = { path = "crates/oracle-switch", version = "0.1.0" }
 
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
