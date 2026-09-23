@@ -822,25 +822,32 @@ pub struct DiffScope {
 }
 
 impl DiffScope {
-    /// Parse hunk headers out of a unified diff.
+    /// Parse a unified diff into the new-side lines it *adds*.
+    ///
+    /// Only `+` lines count. A hunk header's range includes context lines, and
+    /// cargo-mutants does not mutate on the strength of context — scoping by
+    /// the header would mark symbols adjacent to a change as examined when the
+    /// run never considered them.
     ///
     /// ```
     /// use oracle_core::mutation::DiffScope;
     ///
     /// let diff = "\
     /// +++ b/src/lib.rs
-    /// @@ -10,3 +12,5 @@ fn context()
-    /// @@ -40 +44 @@
+    /// @@ -10,4 +10,5 @@
+    ///  context
+    /// +added
+    ///  more context
     /// ";
     /// let scope = DiffScope::parse(diff);
-    /// assert!(scope.covers("src/lib.rs", 13));
-    /// assert!(scope.covers("src/lib.rs", 44), "a hunk with no count spans one line");
-    /// assert!(!scope.covers("src/lib.rs", 30));
-    /// assert!(!scope.covers("src/other.rs", 13));
+    /// assert!(scope.covers("src/lib.rs", 11), "the added line");
+    /// assert!(!scope.covers("src/lib.rs", 10), "context is not a change");
+    /// assert!(!scope.covers("src/lib.rs", 12), "nor is trailing context");
     /// ```
     pub fn parse(diff: &str) -> Self {
         let mut files: BTreeMap<String, Vec<(u32, u32)>> = BTreeMap::new();
         let mut current: Option<String> = None;
+        let mut new_line: u32 = 0;
 
         for line in diff.lines() {
             if let Some(rest) = line.strip_prefix("+++ ") {
@@ -849,29 +856,43 @@ impl DiffScope {
                     .then(|| path.strip_prefix("b/").unwrap_or(path).to_string());
                 continue;
             }
-
-            let Some(file) = current.as_ref() else {
+            if line.starts_with("--- ") || line.starts_with("diff --git ") {
                 continue;
-            };
-            // `@@ -old,count +new,count @@ optional context`
-            let Some(rest) = line.strip_prefix("@@ ") else {
-                continue;
-            };
-            let Some(new_side) = rest.split_whitespace().find(|t| t.starts_with('+')) else {
-                continue;
-            };
-            let spec = &new_side[1..];
-            let (start, count) = match spec.split_once(',') {
-                Some((s, c)) => (s.parse().unwrap_or(0), c.parse().unwrap_or(1)),
-                None => (spec.parse().unwrap_or(0), 1u32),
-            };
-            if start == 0 {
-                continue; // a pure deletion has no new-side lines
             }
-            files
-                .entry(file.clone())
-                .or_default()
-                .push((start, start + count.saturating_sub(1)));
+
+            let Some(file) = current.clone() else {
+                continue;
+            };
+
+            if let Some(rest) = line.strip_prefix("@@ ") {
+                // `@@ -old,count +new,count @@`
+                new_line = rest
+                    .split_whitespace()
+                    .find(|t| t.starts_with('+'))
+                    .map(|t| t[1..].split(',').next().unwrap_or("0"))
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                continue;
+            }
+            if new_line == 0 {
+                continue; // not inside a hunk yet
+            }
+
+            match line.as_bytes().first() {
+                Some(b'+') => {
+                    let ranges = files.entry(file).or_default();
+                    // Coalesce runs of added lines into one range.
+                    match ranges.last_mut() {
+                        Some(last) if last.1 + 1 == new_line => last.1 = new_line,
+                        _ => ranges.push((new_line, new_line)),
+                    }
+                    new_line += 1;
+                }
+                Some(b'-') => {}
+                // Context, and the `\ No newline` marker, which has no line.
+                Some(b'\\') => {}
+                _ => new_line += 1,
+            }
         }
 
         Self { files }
@@ -926,11 +947,14 @@ mod scope_tests {
         )
     }
 
-    /// One hunk covering lines 40-44 of a file with symbols on either side.
+    /// One hunk adding lines 40-44 of a file with symbols on either side.
     fn scoped_map() -> MutationMap {
         MutationMap {
             mutated_files: ["src/claims.rs".to_string()].into_iter().collect(),
-            scope: Some(DiffScope::parse("+++ b/src/claims.rs\n@@ -38,3 +40,5 @@\n")),
+            // A hunk adding five lines at 40..=44.
+            scope: Some(DiffScope::parse(
+                "+++ b/src/claims.rs\n@@ -38,0 +40,5 @@\n+a\n+b\n+c\n+d\n+e\n",
+            )),
             ..Default::default()
         }
     }
@@ -991,5 +1015,69 @@ mod scope_tests {
             map.verification_of(&symbol_at("src/lint.rs", 10, 20)),
             Verification::OutOfScope
         );
+    }
+}
+
+#[cfg(test)]
+mod diff_context_tests {
+    use super::*;
+
+    /// A change with the default three lines of context around it.
+    const WITH_CONTEXT: &str = "\
+diff --git a/src/claims.rs b/src/claims.rs
+--- a/src/claims.rs
++++ b/src/claims.rs
+@@ -37,6 +37,8 @@ fn preceding()
+ context one
+ context two
+ context three
++added four
++added five
+ context six
+ context seven
+ context eight
+";
+
+    #[test]
+    fn only_added_lines_are_in_scope_never_the_context_around_them() {
+        let scope = DiffScope::parse(WITH_CONTEXT);
+
+        assert!(scope.covers("src/claims.rs", 40), "first added line");
+        assert!(scope.covers("src/claims.rs", 41), "second added line");
+
+        // cargo-mutants does not mutate on the strength of context, so neither
+        // do we. Counting it would mark the symbol *above* the change as
+        // examined, and report "no mutant exists" about code never considered.
+        assert!(!scope.covers("src/claims.rs", 39), "context before");
+        assert!(!scope.covers("src/claims.rs", 42), "context after");
+    }
+
+    #[test]
+    fn a_run_of_added_lines_coalesces_into_one_range() {
+        let scope = DiffScope::parse(WITH_CONTEXT);
+        assert_eq!(scope.files["src/claims.rs"], vec![(40, 41)]);
+    }
+
+    #[test]
+    fn removed_lines_do_not_advance_the_new_side_counter() {
+        let diff = "\
++++ b/src/x.rs
+@@ -10,4 +10,2 @@
+ keep
+-gone
+-also gone
++replacement
+";
+        let scope = DiffScope::parse(diff);
+        // "keep" is line 10; the two deletions consume no new-side lines, so
+        // the replacement lands on 11.
+        assert_eq!(scope.files["src/x.rs"], vec![(11, 11)]);
+    }
+
+    #[test]
+    fn a_no_newline_marker_is_not_counted_as_a_line() {
+        let diff = "+++ b/src/x.rs\n@@ -1 +1 @@\n+only\n\\ No newline at end of file\n";
+        let scope = DiffScope::parse(diff);
+        assert_eq!(scope.files["src/x.rs"], vec![(1, 1)]);
     }
 }
