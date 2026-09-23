@@ -309,3 +309,116 @@ fn an_accessor_is_excluded_from_scoring_and_so_from_claims() {
     assert_eq!(sym(&inv, "host").triviality, Triviality::Accessor);
     assert!(claims.claimants(&sym(&inv, "host").id).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Slice v3: mutation verification
+// ---------------------------------------------------------------------------
+
+/// Real `cargo mutants` output for the weak-suite fixture: outcomes.json plus
+/// the one caught mutant's log. Testing against the genuine schema rather than
+/// a hand-written one is the point -- the `scenario` field is either the string
+/// "Baseline" or a `{ "Mutant": .. }` object, which a synthetic fixture would
+/// almost certainly get wrong.
+fn fixture_mutation() -> (Inventory, oracle_core::mutation::MutationMap) {
+    use oracle_core::mutation::{self, MutationMap};
+
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/weak-suite-mutants");
+    let mutants = mutation::load(&dir).expect("cargo-mutants output must parse");
+    let inv = fixture();
+    let map = MutationMap::build(&inv, &mutants);
+    (inv, map)
+}
+
+#[test]
+fn mutants_join_onto_the_symbol_whose_body_contains_them() {
+    let (inv, map) = fixture_mutation();
+
+    // cargo-mutants' own function span starts at the doc comment, so it does
+    // not equal our `fn` line. Joining on the *replaced* span sidesteps that.
+    assert!(
+        map.unattributed.is_empty(),
+        "every mutant should land in a symbol: {:?}",
+        map.unattributed
+            .iter()
+            .map(|m| (&m.function_name, m.line))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(map.total_mutants, 10);
+    assert!(map.verdicts.contains_key(&sym(&inv, "set_retries").id));
+}
+
+#[test]
+fn a_test_with_a_real_oracle_verifies_its_symbol_and_is_named() {
+    use oracle_core::mutation::Verification;
+
+    let (inv, map) = fixture_mutation();
+    let parse = map.verdict(&sym(&inv, "parse").id);
+
+    assert_eq!(parse.verification(), Verification::Verified);
+    assert_eq!(parse.caught, 1);
+    let killers: Vec<&str> = parse.killed_by.iter().map(|t| t.path.as_str()).collect();
+    assert_eq!(
+        killers,
+        vec!["weak_suite::config::tests::parse_extracts_host_and_port"],
+        "the kill is attributed to the one test that asserts on values"
+    );
+}
+
+#[test]
+fn orc010_predicted_the_pseudo_tested_symbol_before_any_mutant_ran() {
+    use oracle_core::claims::ClaimMap;
+    use oracle_core::lint;
+    use oracle_core::mutation::Verification;
+
+    let (inv, map) = fixture_mutation();
+    let set_retries = sym(&inv, "set_retries");
+
+    // v3's evidence: the body was replaced with `()` and nothing failed.
+    let verdict = map.verdict(&set_retries.id);
+    assert_eq!(verdict.verification(), Verification::PseudoTested);
+    assert_eq!(verdict.missed, 1);
+    assert!(verdict.killed_by.is_empty());
+
+    // v0's prediction, from the signature alone, at no build cost.
+    let claims = ClaimMap::build(&inv);
+    let oracles = lint::analyze(&inv);
+    let predicted = lint::shape_mismatches(&inv, &claims, &oracles);
+    assert!(
+        predicted
+            .iter()
+            .any(|f| f.symbol.as_deref() == Some(set_retries.path.as_str())),
+        "ORC010 should have called this statically: {predicted:?}"
+    );
+}
+
+#[test]
+fn a_symbol_no_test_reaches_is_pseudo_tested_across_every_mutant() {
+    use oracle_core::mutation::Verification;
+
+    let (inv, map) = fixture_mutation();
+    let redact = map.verdict(&sym(&inv, "redact").id);
+
+    assert_eq!(redact.verification(), Verification::PseudoTested);
+    assert_eq!(redact.caught, 0);
+    assert!(
+        redact.missed >= 4,
+        "redact has value and comparison mutants, all surviving: {redact:?}"
+    );
+}
+
+#[test]
+fn a_signature_with_no_mutant_is_unscorable_rather_than_unverified() {
+    use oracle_core::mutation::Verification;
+
+    let (inv, map) = fixture_mutation();
+
+    // `Config::new` returns `Self`; body replacement has no default to
+    // substitute, so cargo-mutants emits nothing. The constructor is in fact
+    // well tested -- reporting it as a gap would be wrong.
+    let new = map.verdict(&sym(&inv, "new").id);
+    assert_eq!(new.caught + new.missed + new.unviable, 0);
+    assert_eq!(
+        map.verification(&sym(&inv, "new").id),
+        Verification::NotMutated
+    );
+}
