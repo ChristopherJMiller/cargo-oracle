@@ -156,7 +156,10 @@ fn mutating_call_with_no_post_state_assertion_is_a_shape_mismatch() {
         finding.symbol.as_deref(),
         Some("weak_suite::config::Config::set_retries")
     );
-    assert!(finding.snippet.contains("mutates `c`"));
+    // The snippet is the offending call; the prose lives in the rule message,
+    // which is what rustc-style diagnostics put on the headline.
+    assert_eq!(finding.snippet, "c.set_retries(..)");
+    assert!(finding.rule.message().contains("observes the receiver"));
 }
 
 #[test]
@@ -424,53 +427,126 @@ fn a_signature_with_no_mutant_is_unscorable_rather_than_unverified() {
 }
 
 // ---------------------------------------------------------------------------
-// Report rendering: the output is the product, so its shape is tested too
+// Report rendering: the output is the product, and it follows rustc's shape
 // ---------------------------------------------------------------------------
 
+fn rendered() -> String {
+    use oracle_core::report::{Report, Styles};
+    Report::build(&fixture()).to_text(false, Styles::plain())
+}
+
 #[test]
-fn the_rendered_report_accounts_for_every_test_it_does_not_show() {
-    use oracle_core::report::Report;
+fn a_diagnostic_carries_a_location_arrow_and_a_source_window() {
+    let text = rendered();
 
-    let inv = fixture();
-    let text = Report::build(&inv).to_text(false);
-
-    // The fixture has five tests; two have a strong oracle and no findings, so
-    // the detail section lists three. A reader who sees "5 tests" in the header
-    // and counts three below must be told why, or the report reads as a bug.
+    // rustc's anatomy: `warning: <msg>` / ` --> file:line:col` / gutter with
+    // the source line / carets beneath the span.
+    assert!(text.contains("warning: this test cannot fail"), "{text}");
+    assert!(text.contains("--> src/config.rs:64:8"), "{text}");
     assert!(
-        text.contains("3 of 5 tests"),
-        "the count of flagged tests must be stated: {text}"
+        text.contains("64 |     fn test_validate() {"),
+        "the offending source line is quoted: {text}"
     );
     assert!(
-        text.contains("2 tests not shown"),
-        "the tests omitted must be accounted for: {text}"
+        text.contains("^^^^^^^^^^^^^"),
+        "carets mark the span: {text}"
     );
 }
 
 #[test]
-fn findings_name_the_rule_not_only_its_code() {
-    use oracle_core::report::Report;
+fn carets_sit_under_the_span_they_refer_to() {
+    let text = rendered();
 
-    let inv = fixture();
-    let text = Report::build(&inv).to_text(false);
+    // Find the quoted line and the caret line that follows it, and check the
+    // carets start at the same column as the code they point at.
+    let lines: Vec<&str> = text.lines().collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.contains("assert!(true)") && l.contains(" | "))
+        .expect("the tautological assert is quoted");
+    let source = lines[idx];
+    let carets = lines[idx + 1];
 
-    // `ORC002` alone tells a first-time reader nothing. The name carries the
-    // meaning and the code is for filtering and `explain`.
-    assert!(text.contains("discriminant-only (ORC002)"), "{text}");
-    assert!(text.contains("oracle-shape-mismatch (ORC010)"), "{text}");
+    let code_col = source.find("assert!(true)").expect("code present");
+    let caret_col = carets.find('^').expect("carets present");
+    assert_eq!(
+        code_col, caret_col,
+        "carets must align under the code:\n{source}\n{carets}"
+    );
+    assert_eq!(
+        carets.matches('^').count(),
+        "assert!(true)".len(),
+        "one caret per character of the span"
+    );
 }
 
 #[test]
-fn a_clean_report_says_so_rather_than_printing_an_empty_section() {
+fn footnotes_split_context_from_the_fix_the_way_rustc_does() {
+    let text = rendered();
+
+    // `help` is what to change; `note` is context. rustc draws that line
+    // strictly and readers rely on it.
+    assert!(
+        text.contains("= help: assert on what the call produced"),
+        "{text}"
+    );
+    assert!(
+        text.contains("= note: oracle lint `no_oracle` (ORC001)"),
+        "clippy names the lint in a trailing note: {text}"
+    );
+}
+
+#[test]
+fn the_summary_follows_cargos_generated_n_warnings_shape() {
+    let text = rendered();
+    assert!(
+        text.contains("warning: `weak-suite` generated 4 warnings across 3 of 5 tests"),
+        "{text}"
+    );
+    // rustc's closing line, so a reader knows where to get more.
+    assert!(
+        text.contains("For more information about a rule, try `cargo oracle explain"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_clean_run_says_so_rather_than_printing_nothing() {
     use oracle_core::claims::ClaimMap;
-    use oracle_core::report::Report;
 
     let inv = fixture();
-    let report = Report::build(&inv);
-    let text = report.to_text(false);
-
-    // Every scorable symbol in the fixture is claimed, so the report should
-    // state that outright instead of leaving a bare heading.
     assert!(ClaimMap::build(&inv).unclaimed(&inv, false).is_empty());
-    assert!(text.contains("Every scorable symbol is claimed"), "{text}");
+    assert!(
+        rendered().contains("all claimed by some test"),
+        "{}",
+        rendered()
+    );
+}
+
+#[test]
+fn short_format_is_one_grep_friendly_line_per_finding() {
+    use oracle_core::report::Report;
+
+    let short = Report::build(&fixture()).to_short();
+    let lines: Vec<&str> = short.lines().collect();
+    assert_eq!(lines.len(), 4, "one line per finding: {short}");
+    // `file:line:col: level: message [CODE]`, the shape editors parse.
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.starts_with("src/config.rs:") && l.contains(": warning: ")),
+        "{short}"
+    );
+    assert!(lines[0].ends_with("[ORC002]"), "{short}");
+}
+
+#[test]
+fn styling_is_off_unless_asked_for() {
+    use oracle_core::report::{ColorChoice, Report, Styles};
+
+    let plain = Report::build(&fixture()).to_text(false, Styles::plain());
+    assert!(!plain.contains('\x1b'), "plain output carries no escapes");
+
+    let colored = Report::build(&fixture()).to_text(false, Styles::resolve(ColorChoice::Always));
+    assert!(colored.contains('\x1b'), "--color always must colorize");
 }

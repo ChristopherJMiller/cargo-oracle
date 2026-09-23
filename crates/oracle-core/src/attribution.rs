@@ -280,6 +280,7 @@ mod tests {
             },
             kind: TestKind::Unit,
             span: LineSpan { start: 1, end: 9 },
+            name_span: crate::lint::Span::at(1, 4, 4),
             is_ignored: false,
             is_async: false,
             should_panic: None,

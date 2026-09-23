@@ -16,51 +16,56 @@ not the question. Whether it can fail is.
 
 ## What it looks like
 
+Findings are rendered as rustc-style diagnostics, because a Rust developer
+should not have to learn a new report format:
+
 ```
 $ cargo oracle lint
 
-cargo-oracle  static audit
+warning: this assertion checks the discriminant and discards the value
+  --> src/config.rs:60:9
+   |
+60 |         assert!(parse("h:1").is_ok());
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: unwrap and assert on the payload:
+           `assert_eq!(parse(s).unwrap().port, 8080)` rather than
+           `assert!(parse(s).is_ok())`.
+   = note: oracle lint `discriminant_only` (ORC002)
 
-  2 files, 5 scorable symbols, 5 tests (1 doctest)
+warning: nothing observes the receiver this call mutates
+  --> src/config.rs:72:9
+   |
+72 |         c.set_retries(3);
+   |         ^^^^^^^^^^^^^^^^ weak_suite::config::Config::set_retries
+   |
+   = help: assert on the receiver after the call: `obj.mutate();
+           assert_eq!(obj.field, expected);` -- or compare the whole value if
+           it derives PartialEq.
+   = note: oracle lint `oracle_shape_mismatch` (ORC010)
 
-3 of 5 tests have an oracle that cannot discriminate:
+warning: `weak-suite` generated 4 warnings across 3 of 5 tests
+  oracle strength: 2 strong, 0 partial, 1 weak, 2 none
+  5 symbols scorable, all claimed by some test
 
-  src/config.rs:70  test_set_retries           no oracle
-      high   tautological-assert (ORC007)
-             assert!(true)
-      high   oracle-shape-mismatch (ORC010)
-             on weak_suite::config::Config::set_retries
-             `c.set_retries(..)` mutates `c`, which no assertion observes
-
-  src/config.rs:64  test_validate              no oracle
-      high   no-oracle (ORC001)
-
-  src/config.rs:59  test_parse                 weak
-      high   discriminant-only (ORC002)
-             assert!(parse("h:1").is_ok())
-
-  2 tests not shown: no findings. Use -v to list every test.
-
-summary
-  oracle strength   2 strong, 0 partial, 1 weak, 2 with none
-  findings          4 high, 0 medium, 0 low
+For more information about a rule, try `cargo oracle explain ORC002`.
 ```
 
-The report is organized around the **test**, because a test is what you fix.
-Every count reconciles: if five tests exist and three are listed, the report
-says where the other two went.
+Messages are lowercase and unpunctuated, `help` carries the fix while `note`
+carries context, lint names are `snake_case`, diagnostics go to stderr, and
+`--color` and `--message-format human|short|json` behave as cargo's do.
 
-`ORC010` is the finding you cannot get anywhere else. Rust puts effects in
-types, so `fn set_retries(&mut self, n: u8)` announces that its result lives in
-the receiver — and a test that calls it and never mentions `c` again is
-*structurally* blind to it, no matter how many assertions it has.
+`oracle_shape_mismatch` is the finding you cannot get anywhere else. Rust puts
+effects in types, so `fn set_retries(&mut self, n: u8)` announces that its
+result lives in the receiver — and a test that calls it and never mentions `c`
+again is *structurally* blind to it, no matter how many assertions it has.
 
-Any rule will explain itself:
+Any rule explains itself, as `rustc --explain` does:
 
 ```
 $ cargo oracle explain ORC010
 
-ORC010  oracle-shape-mismatch   severity: high
+ORC010  oracle_shape_mismatch   severity: high
 
 why it matters
   The claimed symbol mutates its receiver, but no assertion observes that
@@ -68,7 +73,7 @@ why it matters
   has return-value oracles.
 
 how to fix it
-  Assert on the receiver after the call: `obj.mutate();
+  assert on the receiver after the call: `obj.mutate();
   assert_eq!(obj.field, expected);` -- or compare the whole value if it
   derives PartialEq.
 ```
@@ -131,6 +136,7 @@ cargo build --release
 
 cargo oracle lint                 # static oracle audit (no build, no test run)
 cargo oracle explain ORC010       # what a rule means and how to fix it
+cargo oracle explain              # list every rule
 cargo oracle lint --deny high     # exit 1 on any high-severity finding, for CI
 cargo oracle inventory            # symbols and the oracle shape each requires
 cargo oracle claims               # which tests speak for which symbols
@@ -142,7 +148,8 @@ cargo oracle verify --since origin/main            # mutate only what the branch
 cargo oracle verify --in-diff pr.diff              # or supply the diff yourself
 cargo oracle verify --with-attribution            # adds the per-test verdict
 cargo oracle fastverify --dry-run                 # experimental: one build, N runs
-cargo oracle --format json lint   # machine-readable
+cargo oracle lint --message-format short   # one line per finding, for editors
+cargo oracle lint --message-format json    # machine-readable, on stdout
 ```
 
 ## Status

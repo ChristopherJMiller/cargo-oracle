@@ -74,6 +74,28 @@ pub enum Severity {
 }
 
 impl Rule {
+    /// The one-line diagnostic headline.
+    ///
+    /// rustc's style guide: lowercase, no terminal punctuation, code in
+    /// backticks, and short enough to read many times. The longer explanation
+    /// belongs in [`Rule::why`] and the fix in [`Rule::fix`].
+    pub fn message(self) -> &'static str {
+        match self {
+            Rule::NoOracle => "this test cannot fail",
+            Rule::DiscriminantOnly => {
+                "this assertion checks the discriminant and discards the value"
+            }
+            Rule::UnwrapOnly => "the only way this test can fail is a panic",
+            Rule::MatchesWildcard => "this pattern wildcards every field it matches",
+            Rule::ShouldPanicUnqualified => "`#[should_panic]` here accepts any panic",
+            Rule::DiscardedResult => "the result of this call is discarded",
+            Rule::TautologicalAssert => "this assertion cannot fail",
+            Rule::IgnoredTest => "this test is ignored, so it never runs",
+            Rule::ComputedExpectation => "the expected value is computed by the code under test",
+            Rule::OracleShapeMismatch => "nothing observes the receiver this call mutates",
+        }
+    }
+
     /// Every rule, in id order.
     pub const ALL: [Rule; 10] = [
         Rule::NoOracle,
@@ -100,7 +122,9 @@ impl Rule {
     /// assert_eq!(Rule::find("nope"), None);
     /// ```
     pub fn find(needle: &str) -> Option<Rule> {
-        let needle = needle.trim().to_ascii_lowercase();
+        // Accept `discriminant-only` as well as `discriminant_only`: the two
+        // spellings are indistinguishable to a reader and free to accept.
+        let needle = needle.trim().to_ascii_lowercase().replace('-', "_");
         Rule::ALL
             .into_iter()
             .find(|r| r.id().to_ascii_lowercase() == needle || r.name() == needle)
@@ -113,19 +137,19 @@ impl Rule {
     pub fn fix(self) -> &'static str {
         match self {
             Rule::NoOracle => {
-                "Assert on what the call produced. If it returns a value, compare it to an \
+                "assert on what the call produced. If it returns a value, compare it to an \
                  expected one; if it mutates a receiver, assert on the receiver afterwards."
             }
             Rule::DiscriminantOnly => {
-                "Unwrap and assert on the payload: `assert_eq!(parse(s).unwrap().port, 8080)` \
+                "unwrap and assert on the payload: `assert_eq!(parse(s).unwrap().port, 8080)` \
                  rather than `assert!(parse(s).is_ok())`."
             }
             Rule::UnwrapOnly => {
-                "Keep the unwrap for convenience, then assert something about the value it \
+                "keep the unwrap for convenience, then assert something about the value it \
                  produced."
             }
             Rule::MatchesWildcard => {
-                "Bind the fields you care about and check them: \
+                "bind the fields you care about and check them: \
                  `assert!(matches!(e, Error::Parse(m) if m.contains(\"port\")))`, or compare \
                  the whole value with `assert_eq!`."
             }
@@ -134,23 +158,23 @@ impl Rule {
                  on the way in no longer passes the test."
             }
             Rule::DiscardedResult => {
-                "Bind the result and assert on it, or delete the call if it is only there \
+                "bind the result and assert on it, or delete the call if it is only there \
                  for coverage."
             }
             Rule::TautologicalAssert => {
-                "Replace one side with an independently written expected value. If there is \
+                "replace one side with an independently written expected value. If there is \
                  nothing to compare against, the test has no subject."
             }
             Rule::IgnoredTest => {
-                "Fix and re-enable it, or delete it. An ignored test is documentation that \
+                "fix and re-enable it, or delete it. An ignored test is documentation that \
                  looks like coverage."
             }
             Rule::ComputedExpectation => {
-                "Write the expected value out as a literal or constructor instead of \
+                "write the expected value out as a literal or constructor instead of \
                  computing it with the function under test."
             }
             Rule::OracleShapeMismatch => {
-                "Assert on the receiver after the call: `obj.mutate(); assert_eq!(obj.field, \
+                "assert on the receiver after the call: `obj.mutate(); assert_eq!(obj.field, \
                  expected);` -- or compare the whole value if it derives PartialEq."
             }
         }
@@ -162,7 +186,7 @@ impl Rule {
     /// use oracle_core::lint::{Rule, Severity};
     ///
     /// assert_eq!(Rule::DiscriminantOnly.id(), "ORC002");
-    /// assert_eq!(Rule::DiscriminantOnly.name(), "discriminant-only");
+    /// assert_eq!(Rule::DiscriminantOnly.name(), "discriminant_only");
     /// assert_eq!(Rule::DiscriminantOnly.severity(), Severity::High);
     ///
     /// // Every rule explains itself, so a report can say why.
@@ -186,16 +210,16 @@ impl Rule {
     /// Short kebab-case name, e.g. `discriminant-only`.
     pub fn name(self) -> &'static str {
         match self {
-            Rule::NoOracle => "no-oracle",
-            Rule::DiscriminantOnly => "discriminant-only",
-            Rule::UnwrapOnly => "unwrap-only",
-            Rule::MatchesWildcard => "matches-wildcard",
-            Rule::ShouldPanicUnqualified => "should-panic-unqualified",
-            Rule::DiscardedResult => "discarded-result",
-            Rule::TautologicalAssert => "tautological-assert",
-            Rule::IgnoredTest => "ignored-test",
-            Rule::ComputedExpectation => "computed-expectation",
-            Rule::OracleShapeMismatch => "oracle-shape-mismatch",
+            Rule::NoOracle => "no_oracle",
+            Rule::DiscriminantOnly => "discriminant_only",
+            Rule::UnwrapOnly => "unwrap_only",
+            Rule::MatchesWildcard => "matches_wildcard",
+            Rule::ShouldPanicUnqualified => "should_panic_unqualified",
+            Rule::DiscardedResult => "discarded_result",
+            Rule::TautologicalAssert => "tautological_assert",
+            Rule::IgnoredTest => "ignored_test",
+            Rule::ComputedExpectation => "computed_expectation",
+            Rule::OracleShapeMismatch => "oracle_shape_mismatch",
         }
     }
 
@@ -263,15 +287,69 @@ impl Rule {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A source region, as rustc-style diagnostics need it: enough to draw a line
+/// of carets under the offending code.
+///
+/// Lines are 1-based; columns are 1-based, matching what a `-->` line prints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Span {
+    /// 1-based line of the first character.
+    pub line: u32,
+    /// 1-based column of the first character.
+    pub col: u32,
+    /// 1-based line of the last character.
+    pub end_line: u32,
+    /// 1-based column one past the last character.
+    pub end_col: u32,
+}
+
+impl Span {
+    /// Build a span from a `syn` node.
+    ///
+    /// `proc-macro2` reports 0-based columns; diagnostics print 1-based ones.
+    pub fn of(node: &impl syn::spanned::Spanned) -> Self {
+        let span = node.span();
+        let (start, end) = (span.start(), span.end());
+        Span {
+            line: start.line as u32,
+            col: start.column as u32 + 1,
+            end_line: end.line as u32,
+            end_col: end.column as u32 + 1,
+        }
+    }
+
+    /// A span covering a single line from `col`, `len` characters wide.
+    pub fn at(line: u32, col: u32, len: u32) -> Self {
+        Span {
+            line,
+            col,
+            end_line: line,
+            end_col: col + len,
+        }
+    }
+
+    /// How many carets to draw, for a span that begins and ends on one line.
+    ///
+    /// Multi-line spans are marked at their first line only: rustc draws a
+    /// bracket around those, which is more machinery than a report needs.
+    pub fn caret_len(&self) -> u32 {
+        if self.end_line == self.line {
+            self.end_col.saturating_sub(self.col).max(1)
+        } else {
+            1
+        }
+    }
+}
+
 /// One rule firing at one place in one test.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Finding {
     /// Which rule fired.
     pub rule: Rule,
     /// The test the finding belongs to.
     pub test: TestId,
-    /// 1-based line the finding points at.
-    pub line: u32,
+    /// The source region the carets point at.
+    pub span: Span,
     /// The symbol this finding is about, when the rule is symbol-specific.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
@@ -320,8 +398,8 @@ pub struct ReceiverCall {
     pub receiver: String,
     /// The method called.
     pub method: String,
-    /// 1-based line of the call.
-    pub line: u32,
+    /// Span of the call.
+    pub span: Span,
 }
 
 /// Analyze every test in the inventory.
@@ -362,7 +440,7 @@ pub fn analyze_test(test: &TestItem) -> TestOracles {
             });
             scan.flag(
                 Rule::ShouldPanicUnqualified,
-                test.span.start,
+                test.name_span,
                 "#[should_panic]",
             );
         }
@@ -384,7 +462,7 @@ pub fn analyze_test(test: &TestItem) -> TestOracles {
         findings.push(Finding {
             rule: Rule::NoOracle,
             test: test.id.clone(),
-            line: test.span.start,
+            span: test.name_span,
             symbol: None,
             snippet: String::new(),
         });
@@ -393,7 +471,7 @@ pub fn analyze_test(test: &TestItem) -> TestOracles {
         findings.push(Finding {
             rule: Rule::UnwrapOnly,
             test: test.id.clone(),
-            line: sites[0].line,
+            span: Span::at(sites[0].line, 1, 1),
             symbol: None,
             snippet: String::new(),
         });
@@ -403,7 +481,7 @@ pub fn analyze_test(test: &TestItem) -> TestOracles {
         findings.push(Finding {
             rule: Rule::IgnoredTest,
             test: test.id.clone(),
-            line: test.span.start,
+            span: test.name_span,
             symbol: None,
             snippet: String::new(),
         });
@@ -437,11 +515,11 @@ struct Scan {
 }
 
 impl Scan {
-    fn flag(&mut self, rule: Rule, line: u32, snippet: impl Into<String>) {
+    fn flag(&mut self, rule: Rule, span: Span, snippet: impl Into<String>) {
         self.findings.push(Finding {
             rule,
             test: self.test.clone(),
-            line,
+            span,
             symbol: None,
             snippet: normalize(snippet.into()),
         });
@@ -470,14 +548,18 @@ impl Scan {
         let args = parse_args(mac);
 
         let strength = match name {
-            "assert" | "debug_assert" => self.classify_condition(args.first(), line, name),
+            "assert" | "debug_assert" => self.classify_condition(args.first(), name, Span::of(mac)),
             "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => {
-                self.classify_equality(&args, line, mac)
+                self.classify_equality(&args, mac)
             }
             "assert_matches" | "debug_assert_matches" => {
                 let body = mac.tokens.to_string();
                 if pattern_is_wildcard(&body) {
-                    self.flag(Rule::MatchesWildcard, line, format!("{name}!({body})"));
+                    self.flag(
+                        Rule::MatchesWildcard,
+                        Span::of(mac),
+                        format!("{name}!({body})"),
+                    );
                     OracleStrength::Weak
                 } else {
                     OracleStrength::Partial
@@ -501,8 +583,8 @@ impl Scan {
     fn classify_condition(
         &mut self,
         cond: Option<&syn::Expr>,
-        line: u32,
         macro_name: &str,
+        span: Span,
     ) -> OracleStrength {
         let Some(cond) = cond else {
             return OracleStrength::Weak;
@@ -514,14 +596,14 @@ impl Scan {
         match cond {
             // `assert!(true)` and friends.
             syn::Expr::Lit(_) => {
-                self.flag(Rule::TautologicalAssert, line, text);
+                self.flag(Rule::TautologicalAssert, span, text);
                 OracleStrength::None
             }
 
             syn::Expr::MethodCall(m) => {
                 let method = m.method.to_string();
                 if matches!(method.as_str(), "is_ok" | "is_err" | "is_some" | "is_none") {
-                    self.flag(Rule::DiscriminantOnly, line, text);
+                    self.flag(Rule::DiscriminantOnly, span, text);
                     OracleStrength::Weak
                 } else {
                     // Every other predicate -- `contains`, `starts_with`, a
@@ -536,7 +618,7 @@ impl Scan {
                 if inner_name == "matches" {
                     let body = inner.mac.tokens.to_string();
                     if pattern_is_wildcard(&body) {
-                        self.flag(Rule::MatchesWildcard, line, text);
+                        self.flag(Rule::MatchesWildcard, span, text);
                         return OracleStrength::Weak;
                     }
                     return OracleStrength::Partial;
@@ -549,13 +631,13 @@ impl Scan {
                 let left = render(&b.left);
                 let right = render(&b.right);
                 if left == right {
-                    self.flag(Rule::TautologicalAssert, line, text);
+                    self.flag(Rule::TautologicalAssert, span, text);
                     return OracleStrength::None;
                 }
                 OracleStrength::Strong
             }
 
-            syn::Expr::Unary(u) => self.classify_condition(Some(&u.expr), line, macro_name),
+            syn::Expr::Unary(u) => self.classify_condition(Some(&u.expr), macro_name, span),
 
             _ => OracleStrength::Partial,
         }
@@ -563,12 +645,8 @@ impl Scan {
 
     /// `assert_eq!(actual, expected)` — strong unless the two sides are the
     /// same expression, or the expectation is computed by the code under test.
-    fn classify_equality(
-        &mut self,
-        args: &[syn::Expr],
-        line: u32,
-        mac: &syn::Macro,
-    ) -> OracleStrength {
+    fn classify_equality(&mut self, args: &[syn::Expr], mac: &syn::Macro) -> OracleStrength {
+        let span = Span::of(mac);
         let (Some(actual), Some(expected)) = (args.first(), args.get(1)) else {
             // Did not parse as two expressions; fall back to the raw tokens.
             return OracleStrength::Partial;
@@ -578,7 +656,7 @@ impl Scan {
         if a_text == e_text {
             self.flag(
                 Rule::TautologicalAssert,
-                line,
+                span,
                 format!("assert_eq!({a_text}, {e_text})"),
             );
             return OracleStrength::None;
@@ -590,7 +668,7 @@ impl Scan {
         if let Some(call) = shared {
             self.flag(
                 Rule::ComputedExpectation,
-                line,
+                span,
                 format!("both sides call `{call}`: {}", mac.tokens.to_token_stream()),
             );
             return OracleStrength::Weak;
@@ -622,7 +700,7 @@ impl<'ast> Visit<'ast> for Scan {
                 self.receiver_calls.push(ReceiverCall {
                     receiver: ident.to_string(),
                     method: method.clone(),
-                    line: node.method.span().start().line as u32,
+                    span: Span::of(node),
                 });
             }
         }
@@ -651,13 +729,13 @@ impl<'ast> Visit<'ast> for Scan {
         // `let _ = f();` runs `f` and observes nothing.
         if matches!(&node.pat, syn::Pat::Wild(_)) {
             if let Some(init) = &node.init {
-                let line = node.let_token.span.start().line as u32;
+                let span = Span::of(node);
                 let text = render(&init.expr);
                 if matches!(
                     &*init.expr,
                     syn::Expr::Call(_) | syn::Expr::MethodCall(_) | syn::Expr::Macro(_)
                 ) {
-                    self.flag(Rule::DiscardedResult, line, format!("let _ = {text};"));
+                    self.flag(Rule::DiscardedResult, span, format!("let _ = {text};"));
                 }
             }
         }
@@ -839,12 +917,9 @@ pub fn shape_mismatches(
                 findings.push(Finding {
                     rule: Rule::OracleShapeMismatch,
                     test: result.test.clone(),
-                    line: call.line,
+                    span: call.span,
                     symbol: Some(symbol.path.clone()),
-                    snippet: format!(
-                        "`{}.{}(..)` mutates `{}`, which no assertion observes",
-                        call.receiver, call.method, call.receiver
-                    ),
+                    snippet: format!("{}.{}(..)", call.receiver, call.method),
                 });
             }
         }
@@ -890,6 +965,7 @@ mod tests {
             },
             kind: TestKind::Unit,
             span: LineSpan { start: 1, end: 99 },
+            name_span: Span::at(1, 4, f.sig.ident.to_string().chars().count() as u32),
             is_ignored: f.attrs.iter().any(|a| a.path().is_ident("ignore")),
             is_async: f.sig.asyncness.is_some(),
             should_panic,

@@ -13,6 +13,7 @@ use crate::symbol::Triviality;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// Workspace-level counts for the static audit.
@@ -44,6 +45,10 @@ pub struct Summary {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// The v0 static audit: oracle findings and unclaimed symbols.
 pub struct Report {
+    /// Absolute workspace root, so diagnostics can quote source lines.
+    pub root: String,
+    /// Display name for the summary line, taken from the workspace directory.
+    pub package: String,
     /// Workspace-level counts.
     pub summary: Summary,
     /// Per-test oracle verdicts.
@@ -80,7 +85,7 @@ impl Report {
                 .severity()
                 .cmp(&a.rule.severity())
                 .then_with(|| a.test.file.cmp(&b.test.file))
-                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.span.line.cmp(&b.span.line))
         });
 
         let mut strength: BTreeMap<OracleStrength, usize> = BTreeMap::new();
@@ -119,6 +124,11 @@ impl Report {
         };
 
         Self {
+            root: inv.root.clone(),
+            package: std::path::Path::new(&inv.root)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "workspace".into()),
             summary,
             tests,
             findings,
@@ -139,152 +149,121 @@ impl Report {
         serde_json::to_string_pretty(self).expect("report is serializable")
     }
 
-    /// Render the report as text.
+    /// Render the report as rustc-style diagnostics.
     ///
-    /// Organized around the *test*, because a test is what a reader fixes.
-    /// An earlier version printed findings grouped by file and then a separate
-    /// per-test strength table, which said the same thing twice and left the
-    /// reader to join them by eye.
-    pub fn to_text(&self, verbose: bool) -> String {
+    /// Follows the conventions cargo and clippy set: one block per finding,
+    /// with a `-->` location, the offending source line, carets under the
+    /// span, and `= note:`/`= help:` footnotes. Messages are lowercase and
+    /// unpunctuated; `note` carries context and `help` carries the fix.
+    pub fn to_text(&self, verbose: bool, styles: Styles) -> String {
         let mut out = String::new();
+        let mut source = SourceCache::new(&self.root);
+
+        for (file, err) in &self.parse_failures {
+            let _ = writeln!(
+                out,
+                "{}{}",
+                styles.warn("warning"),
+                styles.bold(&format!(": could not parse `{file}`: {err}"))
+            );
+        }
+
+        for finding in &self.findings {
+            render_finding(&mut out, finding, &mut source, &styles, verbose);
+        }
+
         let s = &self.summary;
+        let flagged = self.tests.iter().filter(|t| !t.findings.is_empty()).count();
+        let total = s.findings_high + s.findings_medium + s.findings_low;
+
+        if total == 0 {
+            let _ = writeln!(
+                out,
+                "{}",
+                styles.bold(&format!(
+                    "ok: `{}`: every test has an oracle that can fail",
+                    self.package
+                ))
+            );
+        } else {
+            // Cargo's shape: `warning: `crate` (lib) generated 1 warning`.
+            let _ = writeln!(
+                out,
+                "{}{}",
+                styles.warn("warning"),
+                styles.bold(&format!(
+                    ": `{}` generated {} across {} of {}",
+                    self.package,
+                    plural(total, "warning"),
+                    flagged,
+                    plural(s.tests_total, "test")
+                ))
+            );
+        }
 
         let _ = writeln!(
             out,
-            "cargo-oracle  static audit\n\n  {}, {}, {} ({})\n",
-            plural(s.files, "file"),
-            plural(s.symbols_scorable, "scorable symbol"),
-            plural(s.tests_total, "test"),
-            plural(s.doctests, "doctest"),
+            "  oracle strength: {} strong, {} partial, {} weak, {} none",
+            s.strength
+                .get(&OracleStrength::Strong)
+                .copied()
+                .unwrap_or(0),
+            s.strength
+                .get(&OracleStrength::Partial)
+                .copied()
+                .unwrap_or(0),
+            s.strength.get(&OracleStrength::Weak).copied().unwrap_or(0),
+            s.strength.get(&OracleStrength::None).copied().unwrap_or(0),
         );
-
-        if !self.parse_failures.is_empty() {
-            let _ = writeln!(out, "could not parse:");
-            for (file, err) in &self.parse_failures {
-                let _ = writeln!(out, "  {file}: {err}");
-            }
-            out.push('\n');
-        }
-
-        // Worst oracles first, then most findings: the order a reader would
-        // want to work through them.
-        let mut tests: Vec<&TestOracles> = self.tests.iter().collect();
-        tests.sort_by(|a, b| {
-            a.strength
-                .cmp(&b.strength)
-                .then(b.findings.len().cmp(&a.findings.len()))
-                .then(a.test.path.cmp(&b.test.path))
-        });
-
-        let flagged: Vec<&&TestOracles> = tests.iter().filter(|t| !t.findings.is_empty()).collect();
-        let shown: Vec<&&TestOracles> = if verbose {
-            tests.iter().collect()
-        } else {
-            flagged.clone()
-        };
-
-        if flagged.is_empty() {
-            let _ = writeln!(out, "No test has an oracle that cannot discriminate.\n");
-        } else {
-            let _ = writeln!(
-                out,
-                "{} of {} tests have an oracle that cannot discriminate:\n",
-                flagged.len(),
-                s.tests_total
-            );
-        }
-
-        let locations: Vec<String> = shown
-            .iter()
-            .map(|t| format!("{}:{}", t.test.file, t.test.line))
-            .collect();
-        // Pad to the widest location actually present, capped, so short paths
-        // do not leave a corridor of whitespace.
-        let loc_width = locations.iter().map(String::len).max().unwrap_or(0).min(48);
-
-        for (t, location) in shown.iter().zip(&locations) {
-            let _ = writeln!(
-                out,
-                "  {:<loc_width$}  {:<26} {}",
-                location,
-                truncate(leaf(&t.test.path), 26),
-                strength_label(t.strength)
-            );
-
-            for f in &t.findings {
-                let _ = writeln!(
-                    out,
-                    "      {:<6} {} ({})",
-                    severity_label(f.rule.severity()),
-                    f.rule.name(),
-                    f.rule.id()
-                );
-                if let Some(symbol) = &f.symbol {
-                    let _ = writeln!(out, "             on {symbol}");
-                }
-                if !f.snippet.is_empty() {
-                    let _ = writeln!(out, "             {}", truncate(&f.snippet, 88));
-                }
-                if verbose {
-                    let _ = writeln!(out, "             {}", wrap(f.rule.why(), 13, 76));
-                }
-            }
-            out.push('\n');
-        }
-
-        // Never let the reader wonder why the counts do not add up.
-        let hidden = s.tests_total.saturating_sub(shown.len());
-        if hidden > 0 {
-            let _ = writeln!(
-                out,
-                "  {} not shown: no findings. Use -v to list every test.\n",
-                plural(hidden, "test")
-            );
-        }
 
         if self.unclaimed.is_empty() {
             let _ = writeln!(
                 out,
-                "Every scorable symbol is claimed by at least one test.\n"
+                "  {} scorable, all claimed by some test",
+                plural(s.symbols_scorable, "symbol")
             );
         } else {
             let _ = writeln!(
                 out,
-                "{} that no test claims at all:",
-                plural(self.unclaimed.len(), "scorable symbol")
+                "  {} scorable, {} claimed by no test:",
+                plural(s.symbols_scorable, "symbol"),
+                self.unclaimed.len()
             );
-            let limit = if verbose { usize::MAX } else { 10 };
+            let limit = if verbose { usize::MAX } else { 8 };
             for path in self.unclaimed.iter().take(limit) {
-                let _ = writeln!(out, "  {path}");
+                let _ = writeln!(out, "    {path}");
             }
             if self.unclaimed.len() > limit {
                 let _ = writeln!(
                     out,
-                    "  ... and {} more (-v for all)",
+                    "    ...and {} more; re-run with `-v` for the full list",
                     self.unclaimed.len() - limit
                 );
             }
-            out.push('\n');
         }
 
-        let strength_of = |k: OracleStrength| s.strength.get(&k).copied().unwrap_or(0);
-        let _ = writeln!(
-            out,
-            "summary\n  oracle strength   {} strong, {} partial, {} weak, {} with none\n  findings          {} high, {} medium, {} low",
-            strength_of(OracleStrength::Strong),
-            strength_of(OracleStrength::Partial),
-            strength_of(OracleStrength::Weak),
-            strength_of(OracleStrength::None),
-            s.findings_high,
-            s.findings_medium,
-            s.findings_low
-        );
+        if total > 0 {
+            let first = self.findings[0].rule.id();
+            let _ = writeln!(
+                out,
+                "\nFor more information about a rule, try `cargo oracle explain {first}`."
+            );
+        }
+        if !verbose && total > 0 {
+            let _ = writeln!(out, "Re-run with `-v` for why each rule matters.");
+        }
 
-        let _ = writeln!(
-            out,
-            "\nwhat next\n  cargo oracle explain ORC001   what a rule means and how to fix it\n  cargo oracle verify           whether these tests actually catch bugs\n\nthis audit is static: it finds oracles that *cannot* fail. Whether the ones\nthat can would actually catch a bug needs `verify`."
-        );
+        out
+    }
 
+    /// One line per finding: `file:line:col: warning: message [ORC001]`.
+    ///
+    /// Cargo's `--message-format=short`, for editors and for grep.
+    pub fn to_short(&self) -> String {
+        let mut out = String::new();
+        for finding in &self.findings {
+            render_short(&mut out, finding);
+        }
         out
     }
 }
@@ -1061,23 +1040,250 @@ pub fn render_verification(
     out
 }
 
-/// Word for an oracle strength, as it reads in a report.
-///
-/// `Debug` would render `None` as "none", which in a column beside test names
-/// reads as a missing value rather than as the finding it is.
-fn strength_label(strength: OracleStrength) -> &'static str {
-    match strength {
-        OracleStrength::None => "no oracle",
-        OracleStrength::Weak => "weak",
-        OracleStrength::Partial => "partial",
-        OracleStrength::Strong => "strong",
+// ---------------------------------------------------------------------------
+// rustc-style diagnostic rendering
+// ---------------------------------------------------------------------------
+
+use std::io::IsTerminal;
+
+/// When to colorize, following cargo's `--color` convention.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorChoice {
+    /// Colorize when stderr is a terminal and `NO_COLOR` is unset.
+    #[default]
+    Auto,
+    /// Always colorize.
+    Always,
+    /// Never colorize.
+    Never,
+}
+
+impl ColorChoice {
+    /// Parse `auto`, `always` or `never`.
+    ///
+    /// ```
+    /// use oracle_core::report::ColorChoice;
+    ///
+    /// assert_eq!(ColorChoice::parse("always"), Some(ColorChoice::Always));
+    /// assert_eq!(ColorChoice::parse("NEVER"), Some(ColorChoice::Never));
+    /// assert_eq!(ColorChoice::parse("sometimes"), None);
+    /// ```
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(ColorChoice::Auto),
+            "always" => Some(ColorChoice::Always),
+            "never" => Some(ColorChoice::Never),
+            _ => None,
+        }
     }
 }
 
-fn severity_label(severity: Severity) -> &'static str {
-    match severity {
-        Severity::High => "high",
-        Severity::Medium => "medium",
-        Severity::Low => "low",
+/// ANSI styling for diagnostics, resolved once.
+///
+/// Colors follow rustc: the level word is bold and colored, the message is
+/// bold, and the gutter furniture (`-->`, `|`, `=`) is bold blue.
+#[derive(Clone, Copy, Debug)]
+pub struct Styles {
+    enabled: bool,
+}
+
+impl Styles {
+    /// Resolve a choice against the environment.
+    ///
+    /// `NO_COLOR` is honoured under `Auto`, per <https://no-color.org>.
+    pub fn resolve(choice: ColorChoice) -> Self {
+        let enabled = match choice {
+            ColorChoice::Always => true,
+            ColorChoice::Never => false,
+            ColorChoice::Auto => {
+                std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+            }
+        };
+        Styles { enabled }
     }
+
+    /// Plain styling, for tests and for piping.
+    pub fn plain() -> Self {
+        Styles { enabled: false }
+    }
+
+    fn paint(&self, code: &str, text: &str) -> String {
+        if self.enabled {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    fn warn(&self, text: &str) -> String {
+        self.paint("1;33", text)
+    }
+    fn bold(&self, text: &str) -> String {
+        self.paint("1", text)
+    }
+    fn gutter(&self, text: &str) -> String {
+        self.paint("1;34", text)
+    }
+}
+
+/// Reads source files so diagnostics can quote the offending line.
+///
+/// A file that cannot be read yields no snippet rather than an error: a
+/// missing source line degrades the diagnostic, it does not invalidate it.
+#[derive(Default)]
+struct SourceCache {
+    root: PathBuf,
+    files: BTreeMap<String, Option<Vec<String>>>,
+}
+
+impl SourceCache {
+    fn new(root: impl Into<PathBuf>) -> Self {
+        SourceCache {
+            root: root.into(),
+            files: BTreeMap::new(),
+        }
+    }
+
+    fn line(&mut self, file: &str, line: u32) -> Option<String> {
+        let entry = self.files.entry(file.to_string()).or_insert_with(|| {
+            std::fs::read_to_string(self.root.join(file))
+                .ok()
+                .map(|t| t.lines().map(str::to_string).collect())
+        });
+        entry.as_ref()?.get(line.checked_sub(1)? as usize).cloned()
+    }
+}
+
+/// Render one finding as a rustc-style diagnostic block.
+///
+/// ```text
+/// warning: this test cannot fail
+///   --> src/config.rs:64:8
+///    |
+/// 64 |     fn test_validate() {
+///    |        ^^^^^^^^^^^^^
+///    |
+///    = note: ...
+///    = help: ...
+/// ```
+fn render_finding(
+    out: &mut String,
+    finding: &Finding,
+    source: &mut SourceCache,
+    styles: &Styles,
+    verbose: bool,
+) {
+    let rule = finding.rule;
+    let span = finding.span;
+    let level = match rule.severity() {
+        Severity::High | Severity::Medium => "warning",
+        Severity::Low => "note",
+    };
+
+    // rustc folds the colon into the bold message run rather than styling it
+    // separately, which keeps the escape sequences short.
+    let _ = writeln!(
+        out,
+        "{}{}",
+        styles.warn(level),
+        styles.bold(&format!(": {}", rule.message()))
+    );
+
+    // The gutter is as wide as the line number it must hold.
+    let width = span.line.to_string().len();
+    let pad = " ".repeat(width);
+    let _ = writeln!(
+        out,
+        "{pad}{} {}:{}:{}",
+        styles.gutter("-->"),
+        finding.test.file,
+        span.line,
+        span.col
+    );
+
+    let bar = styles.gutter("|");
+    let mut quoted = false;
+    if let Some(text) = source.line(&finding.test.file, span.line) {
+        quoted = true;
+        let _ = writeln!(out, "{pad} {bar}");
+        let _ = writeln!(
+            out,
+            "{} {bar} {}",
+            styles.gutter(&span.line.to_string()),
+            text
+        );
+
+        // Carets sit under the span. Columns count characters, and a tab in
+        // the source advances further than one column, so the source prefix is
+        // reproduced with tabs preserved rather than counted as one space.
+        let prefix: String = text
+            .chars()
+            .take(span.col.saturating_sub(1) as usize)
+            .map(|c| if c == '\t' { '\t' } else { ' ' })
+            .collect();
+        let carets = "^".repeat(span.caret_len() as usize);
+        let label = finding
+            .symbol
+            .as_deref()
+            .map(|s| format!(" {s}"))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "{pad} {bar} {prefix}{}{}",
+            styles.warn(&carets),
+            styles.warn(&label)
+        );
+    }
+    let _ = writeln!(out, "{pad} {bar}");
+
+    let eq = styles.gutter("=");
+    // `note` is context; `help` is what to change. rustc draws that line
+    // strictly and readers rely on it.
+    if verbose {
+        let _ = writeln!(
+            out,
+            "{pad} {eq} {}: {}",
+            styles.bold("note"),
+            wrap(rule.why(), width + 9, 78)
+        );
+    }
+    // Only echo the source when the caret line could not show it; otherwise
+    // it is the same text twice.
+    if !finding.snippet.is_empty() && !quoted {
+        let _ = writeln!(
+            out,
+            "{pad} {eq} {}: found `{}`",
+            styles.bold("note"),
+            truncate(&finding.snippet, 72)
+        );
+    }
+    let _ = writeln!(
+        out,
+        "{pad} {eq} {}: {}",
+        styles.bold("help"),
+        wrap(rule.fix(), width + 9, 78)
+    );
+    // Clippy names the lint in a trailing note; the explain hint is emitted
+    // once at the end of the run, as rustc does, rather than per finding.
+    let _ = writeln!(
+        out,
+        "{pad} {eq} {}: oracle lint `{}` ({})",
+        styles.bold("note"),
+        rule.name(),
+        rule.id()
+    );
+    out.push('\n');
+}
+
+/// One line per finding, for editors and grep: `file:line:col: level: message`.
+fn render_short(out: &mut String, finding: &Finding) {
+    let _ = writeln!(
+        out,
+        "{}:{}:{}: warning: {} [{}]",
+        finding.test.file,
+        finding.span.line,
+        finding.span.col,
+        finding.rule.message(),
+        finding.rule.id()
+    );
 }

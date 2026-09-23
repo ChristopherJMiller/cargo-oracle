@@ -45,13 +45,13 @@
 //! # Running the whole pipeline
 //!
 //! ```no_run
-//! use oracle_core::{claims::ClaimMap, inventory, lint, report::Report};
+//! use oracle_core::{claims::ClaimMap, inventory, lint, report, report::Report};
 //! # fn main() -> anyhow::Result<()> {
 //! let inv = inventory::walk_workspace(std::path::Path::new("."))?;
 //!
 //! // v0: static, no build. Which oracles cannot discriminate?
 //! let report = Report::build(&inv);
-//! println!("{}", report.to_text(false));
+//! println!("{}", report.to_text(false, report::Styles::plain()));
 //!
 //! // Which symbols does nothing even claim?
 //! let claims = ClaimMap::build(&inv);

@@ -67,6 +67,8 @@ pub struct TestItem {
     pub kind: TestKind,
     /// Full extent of the test function.
     pub span: LineSpan,
+    /// Span of the test function's name, which whole-test findings point at.
+    pub name_span: crate::lint::Span,
     /// `#[ignore]`: it does not run in a default `cargo test`.
     pub is_ignored: bool,
     /// `async fn`, so it needs a runtime attribute to execute.
@@ -456,6 +458,7 @@ impl Walker {
                 },
                 kind: TestKind::Doctest,
                 span: symbol.span,
+                name_span: crate::lint::Span::at(symbol.span.start, 1, 3),
                 is_ignored: false,
                 is_async: false,
                 should_panic: None,
@@ -494,6 +497,11 @@ impl Walker {
                     .map(|b| b.span().end().line as u32)
                     .unwrap_or(start.line as u32),
             },
+            name_span: crate::lint::Span::at(
+                start.line as u32,
+                start.column as u32 + 1,
+                sig.ident.to_string().chars().count() as u32,
+            ),
             is_ignored: attrs.iter().any(|a| a.path().is_ident("ignore")),
             is_async: sig.asyncness.is_some(),
             should_panic: should_panic_of(attrs),

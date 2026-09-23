@@ -13,7 +13,7 @@ use oracle_core::fastmutate::{self, FastOutcome, Plan};
 use oracle_core::inventory::walk_workspace;
 use oracle_core::lint::{Rule, Severity};
 use oracle_core::mutation::{self, MutationMap};
-use oracle_core::report::{self, Report};
+use oracle_core::report::{self, ColorChoice, Report, Styles};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -32,18 +32,45 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     manifest_path: Option<PathBuf>,
 
-    #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
-    format: Format,
+    /// Output format, following cargo's convention.
+    #[arg(long, global = true, value_enum, default_value_t = MessageFormat::Human, value_name = "FMT")]
+    message_format: MessageFormat,
+
+    /// Coloring: auto, always, never.
+    #[arg(long, global = true, value_enum, default_value_t = ColorArg::Auto, value_name = "WHEN")]
+    color: ColorArg,
 
     /// Show every test, plus the reasoning behind each finding.
     #[arg(short, long, global = true)]
     verbose: bool,
 }
 
+/// Cargo names these `human`, `short` and `json`; so do we.
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
-enum Format {
-    Text,
+enum MessageFormat {
+    /// rustc-style diagnostics with source windows.
+    Human,
+    /// One line per finding: `file:line:col: warning: message`.
+    Short,
+    /// Machine-readable.
     Json,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+enum ColorArg {
+    Auto,
+    Always,
+    Never,
+}
+
+impl From<ColorArg> for ColorChoice {
+    fn from(c: ColorArg) -> Self {
+        match c {
+            ColorArg::Auto => ColorChoice::Auto,
+            ColorArg::Always => ColorChoice::Always,
+            ColorArg::Never => ColorChoice::Never,
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -161,9 +188,15 @@ fn main() -> Result<()> {
     }) {
         Command::Lint { deny } | Command::Report { deny } => {
             let report = Report::build(&inventory);
-            match cli.format {
-                Format::Json => println!("{}", report.to_json()),
-                Format::Text => print!("{}", report.to_text(cli.verbose)),
+            match cli.message_format {
+                // Machine formats go to stdout so they can be piped; human
+                // diagnostics go to stderr, as clippy and rustc do.
+                MessageFormat::Json => println!("{}", report.to_json()),
+                MessageFormat::Short => eprint!("{}", report.to_short()),
+                MessageFormat::Human => eprint!(
+                    "{}",
+                    report.to_text(cli.verbose, Styles::resolve(cli.color.into()))
+                ),
             }
             match floor(deny) {
                 Some(floor) => report.findings_at_least(floor).count(),
@@ -172,9 +205,12 @@ fn main() -> Result<()> {
         }
 
         Command::Inventory => {
-            match cli.format {
-                Format::Json => println!("{}", serde_json::to_string_pretty(&inventory.symbols)?),
-                Format::Text => {
+            match cli.message_format {
+                MessageFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&inventory.symbols)?)
+                }
+                //  has no distinct shape for a listing.
+                _ => {
                     println!("{:<52} {:<12} {:<13} NOTES", "SYMBOL", "KIND", "NEEDS");
                     for s in &inventory.symbols {
                         if !cli.verbose && !s.triviality.is_scorable() {
@@ -219,9 +255,10 @@ fn main() -> Result<()> {
             };
             let data = coverage::load(&path, &root)?;
             let map = CoverageMap::join(&inventory, &data);
-            match cli.format {
-                Format::Json => println!("{}", serde_json::to_string_pretty(&map)?),
-                Format::Text => {
+            match cli.message_format {
+                MessageFormat::Json => println!("{}", serde_json::to_string_pretty(&map)?),
+                // A listing has no distinct short form.
+                _ => {
                     print!("{}", report::render_coverage(&inventory, &map, cli.verbose))
                 }
             }
@@ -256,9 +293,10 @@ fn main() -> Result<()> {
                 eprintln!("  [{i}/{n}] {}", t.testcase);
             })?;
 
-            match cli.format {
-                Format::Json => println!("{}", serde_json::to_string_pretty(&map)?),
-                Format::Text => print!(
+            match cli.message_format {
+                MessageFormat::Json => println!("{}", serde_json::to_string_pretty(&map)?),
+                // A listing has no distinct short form.
+                _ => print!(
                     "{}",
                     report::render_attribution(&inventory, &map, cli.verbose)
                 ),
@@ -347,9 +385,10 @@ fn main() -> Result<()> {
                 None
             };
 
-            match cli.format {
-                Format::Json => println!("{}", serde_json::to_string_pretty(&map)?),
-                Format::Text => print!(
+            match cli.message_format {
+                MessageFormat::Json => println!("{}", serde_json::to_string_pretty(&map)?),
+                // A listing has no distinct short form.
+                _ => print!(
                     "{}",
                     report::render_verification(
                         &inventory,
@@ -498,9 +537,10 @@ fn main() -> Result<()> {
 
         Command::Claims => {
             let claims = ClaimMap::build(&inventory);
-            match cli.format {
-                Format::Json => println!("{}", serde_json::to_string_pretty(&claims)?),
-                Format::Text => {
+            match cli.message_format {
+                MessageFormat::Json => println!("{}", serde_json::to_string_pretty(&claims)?),
+                // A listing has no distinct short form.
+                _ => {
                     for symbol in inventory.scorable() {
                         let claimants = claims.claimants(&symbol.id);
                         if claimants.is_empty() {
