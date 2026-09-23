@@ -6,60 +6,88 @@
 ## The problem
 
 Code coverage answers *did we run the line*. It cannot answer *did we check the
-result*. That gap has always existed, but agent-written tests widen it sharply:
-a test that executes thirty symbols and asserts `result.is_ok()` on one of them
-reports as excellent coverage and verifies almost nothing.
+result*. That gap has always existed; agent-written tests widen it sharply.
 
-Counting assertions doesn't help either. Empirical work on AI-authored test
-commits finds agent tests carry a *median of 2.0 assertions vs 1.0 for humans* —
-by assertion density, agent tests score **better** than human ones while
-detecting fewer injected faults. The presence of an oracle is not the question.
-Whether it can fail is.
+Counting assertions does not help. Empirical work on AI-authored test commits
+finds agent tests carry a **median of 2.0 assertions against 1.0 for human
+ones** — while detecting *fewer* injected faults. Assertion density is not a
+weak signal for agent tests, it is an inverted one. The presence of an oracle is
+not the question. Whether it can fail is.
 
-## What cargo-oracle reports
-
-Per symbol, one of four states:
-
-| State | Meaning |
-|---|---|
-| `unexecuted` | No test runs it. An ordinary coverage gap. |
-| `pseudo-tested` | Tests run it, but destroying its body fails no test. |
-| `verified` | Some test fails when the body is destroyed — and we name it. |
-| `type-enforced` | No viable mutant: the type system carries the contract. |
-
-And, inverted, per *test* — the report that actually catches agent slop:
+## What it looks like
 
 ```
-test config::tests::test_merge_and_validate
-  executes 34 symbols, verifies 0          <- pure smoke test
+$ cargo oracle lint
+
+cargo-oracle  static audit (v0)
+  2 files, 5 symbols (4 scorable, 1 accessor skipped), 5 tests (1 doctests)
+
+src/config.rs
+  high:50    ORC002 discriminant-only        test_parse
+         parse("h:1").is_ok()
+  high:54    ORC001 no-oracle                test_validate
+  high:62    ORC010 oracle-shape-mismatch    test_set_retries
+         on weak_suite::config::Config::set_retries
+         `c.set_retries(..)` mutates `c`, which no assertion observes
+  high:63    ORC007 tautological-assert      test_set_retries
+         true
+
+per-test oracle strength
+  none     weak_suite::config::tests::test_set_retries    ORC007 ORC010
+  none     weak_suite::config::tests::test_validate       ORC001
+  weak     weak_suite::config::tests::test_parse          ORC002
+
+summary
+  oracle strength   strong 2   partial 0   weak 1   none 2
+  findings          4 high, 0 medium, 0 low
+  unclaimed         0 of 4 scorable symbols
 ```
 
-No other tool emits mutation score per test; they aggregate to file or project,
-which is exactly the granularity at which a weak new test disappears into a
-healthy average.
+The report leads with the **per-test** verdict. Every other tool aggregates to
+file or project, which is exactly the granularity at which one weak new test
+disappears into a healthy average.
+
+`ORC010` is the finding you cannot get anywhere else. Rust puts effects in
+types, so `fn set_retries(&mut self, n: u8)` announces that its result lives in
+the receiver — and a test that calls it and never mentions `c` again is
+*structurally* blind to it, no matter how many assertions it has.
+
+## Usage
+
+```sh
+nix develop                       # rustc, cargo-nextest, cargo-llvm-cov, cargo-mutants
+cargo build --release
+
+cargo oracle lint                 # static oracle audit (no build, no test run)
+cargo oracle lint --deny high     # exit 1 on any high-severity finding, for CI
+cargo oracle inventory            # symbols and the oracle shape each requires
+cargo oracle claims               # which tests speak for which symbols
+cargo oracle --format json lint   # machine-readable
+```
 
 ## Status
 
-Built in slices. Each is independently useful and ships on its own.
+Built in slices, each independently useful.
 
-- **v0 — static** *(in progress)*: symbol inventory, claim map, oracle-strength
-  lints. No build, no execution, runs in milliseconds on any crate.
+- **v0 — static** ✅ : symbol inventory, claim map, ten oracle-strength lints.
+  No build, no execution, milliseconds on a whole workspace.
 - **v1 — execution**: function-level coverage from `cargo llvm-cov --json`,
   joined to the inventory by definition span.
 - **v2 — per-test attribution**: `cargo-nextest`'s process-per-test model gives
-  one profile per test, so `executes` becomes an edge rather than a bit.
+  one profile per test, so *executes* becomes an edge rather than a bit.
 - **v3 — verification**: `cargo-mutants` body-replacement mutants, with kills
   attributed back to the individual test that caught them.
 
-See [docs/design.md](docs/design.md) for the architecture and the reasoning
-behind the span-based join key.
+v0 deliberately does not claim a symbol is *verified* — that needs mutation
+evidence. What it can say is that an oracle cannot discriminate, and that
+nothing claims a symbol at all.
 
-## Quickstart
+## Documentation
 
-```sh
-nix develop          # or: cargo build --release
-cargo oracle lint    # static oracle audit, no build required
-```
+- [docs/design.md](docs/design.md) — why symbol identity is a definition span,
+  the four symbol states, and why Rust's mutation cost model is inverted.
+- [docs/oracle-lints.md](docs/oracle-lints.md) — every rule, with the pattern it
+  catches and the three that were deliberately *not* made rules.
 
 ## License
 
