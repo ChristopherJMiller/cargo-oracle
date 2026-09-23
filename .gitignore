@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+*.profraw
+*.profdata
+/mutants.out*/
+/coverage/
+.direnv/
+result
+result-*
