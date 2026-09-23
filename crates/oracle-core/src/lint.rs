@@ -353,6 +353,11 @@ pub struct Finding {
     /// The symbol this finding is about, when the rule is symbol-specific.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
+    /// The function whose result the assertion inspected, when the rule is
+    /// about an assertion on a call. Lets a later pass consult the inventory
+    /// for that function's return type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     /// The offending source fragment, normalized to one line.
     pub snippet: String,
 }
@@ -463,6 +468,7 @@ pub fn analyze_test(test: &TestItem) -> TestOracles {
             rule: Rule::NoOracle,
             test: test.id.clone(),
             span: test.name_span,
+            subject: None,
             symbol: None,
             snippet: String::new(),
         });
@@ -472,6 +478,7 @@ pub fn analyze_test(test: &TestItem) -> TestOracles {
             rule: Rule::UnwrapOnly,
             test: test.id.clone(),
             span: Span::at(sites[0].line, 1, 1),
+            subject: None,
             symbol: None,
             snippet: String::new(),
         });
@@ -482,6 +489,7 @@ pub fn analyze_test(test: &TestItem) -> TestOracles {
             rule: Rule::IgnoredTest,
             test: test.id.clone(),
             span: test.name_span,
+            subject: None,
             symbol: None,
             snippet: String::new(),
         });
@@ -521,6 +529,7 @@ impl Scan {
             test: self.test.clone(),
             span,
             symbol: None,
+            subject: None,
             snippet: normalize(snippet.into()),
         });
     }
@@ -602,8 +611,15 @@ impl Scan {
 
             syn::Expr::MethodCall(m) => {
                 let method = m.method.to_string();
-                if matches!(method.as_str(), "is_ok" | "is_err" | "is_some" | "is_none") {
+                if matches!(method.as_str(), "is_ok" | "is_err" | "is_some") {
+                    // `is_none` is deliberately absent: `None` carries no
+                    // payload, so asserting it fully specifies the value.
+                    // The other three leave a payload unexamined.
+                    let subject = called_names(&m.receiver).into_iter().next();
                     self.flag(Rule::DiscriminantOnly, span, text);
+                    if let Some(f) = self.findings.last_mut() {
+                        f.subject = subject;
+                    }
                     OracleStrength::Weak
                 } else {
                     // Every other predicate -- `contains`, `starts_with`, a
@@ -663,8 +679,15 @@ impl Scan {
         }
 
         // The expectation should be written down, not computed by the same
-        // function that produced the actual value.
-        let shared = shared_calls(actual, expected);
+        // function that produced the actual value -- but only for equality.
+        // `assert_ne!(f(a), f(b))` asserts that `f` distinguishes its inputs,
+        // which is a legitimate property rather than a comparison with self.
+        let is_equality = last_segment(&mac.path).contains("_eq");
+        let shared = if is_equality {
+            shared_calls(actual, expected)
+        } else {
+            None
+        };
         if let Some(call) = shared {
             self.flag(
                 Rule::ComputedExpectation,
@@ -918,6 +941,7 @@ pub fn shape_mismatches(
                     rule: Rule::OracleShapeMismatch,
                     test: result.test.clone(),
                     span: call.span,
+                    subject: None,
                     symbol: Some(symbol.path.clone()),
                     snippet: format!("{}.{}(..)", call.receiver, call.method),
                 });
@@ -935,6 +959,36 @@ fn identifiers(tokens: &str) -> Vec<String> {
         .filter(|w| !w.is_empty() && !w.chars().next().unwrap().is_numeric())
         .map(|w| w.to_string())
         .collect()
+}
+/// Drop `discriminant_only` findings whose subject has no payload to discard.
+///
+/// `assert!(op().is_ok())` is a *complete* oracle when `op` returns
+/// `Result<(), E>`: the success case carries nothing else to check. The lint
+/// cannot see that from the test alone, since it only has the call site, so
+/// this pass consults the inventory afterwards.
+///
+/// `Result<(), E>` is the shape of most fallible operations in Rust, so without
+/// this ORC002 fires constantly and wrongly — which is exactly what it did on
+/// this crate's own suite.
+///
+/// A name matching several symbols is resolved conservatively: the finding is
+/// dropped only when *every* candidate wraps unit.
+pub fn refine_discriminant_findings(inv: &Inventory, results: &mut [TestOracles]) {
+    for result in results.iter_mut() {
+        result.findings.retain(|finding| {
+            if finding.rule != Rule::DiscriminantOnly {
+                return true;
+            }
+            let Some(subject) = &finding.subject else {
+                return true;
+            };
+            let mut candidates = inv.symbols.iter().filter(|s| &s.name == subject).peekable();
+            if candidates.peek().is_none() {
+                return true; // not ours; keep the finding
+            }
+            !candidates.all(|s| s.returns_unit_ok)
+        });
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1147,6 +1201,90 @@ mod tests {
     fn a_tautology_in_expression_position_is_still_caught() {
         let o = analyze_src(r#"fn t() { assert!(true) }"#);
         assert_eq!(rules(&o), vec![Rule::TautologicalAssert]);
+    }
+
+    #[test]
+    fn is_none_is_a_total_assertion_not_a_discriminant_check() {
+        // `None` carries no payload, so asserting it fully specifies the
+        // value. `is_ok`/`is_some`/`is_err` each leave one unexamined.
+        let o = analyze_src("fn t() { assert!(lookup(k).is_none()); }");
+        assert!(
+            !rules(&o).contains(&Rule::DiscriminantOnly),
+            "unexpected: {:?}",
+            rules(&o)
+        );
+
+        let o = analyze_src("fn t() { assert!(lookup(k).is_some()); }");
+        assert!(rules(&o).contains(&Rule::DiscriminantOnly));
+    }
+
+    #[test]
+    fn assert_ne_with_a_shared_call_asserts_a_property_not_a_tautology() {
+        // `assert_ne!(f(a), f(b))` says `f` distinguishes its inputs. Calling
+        // the same function on both sides is the point, not a smell -- unlike
+        // `assert_eq!`, where it compares an implementation with itself.
+        let o = analyze_src("fn t() { assert_ne!(label(a), label(b)); }");
+        assert!(
+            !rules(&o).contains(&Rule::ComputedExpectation),
+            "unexpected: {:?}",
+            rules(&o)
+        );
+
+        let o = analyze_src("fn t() { assert_eq!(label(a), label(b)); }");
+        assert!(rules(&o).contains(&Rule::ComputedExpectation));
+    }
+
+    #[test]
+    fn a_discriminant_check_on_a_unit_result_is_refined_away() {
+        use crate::symbol::{
+            LineSpan, ReturnShape, SelfKind, Symbol, SymbolId, SymbolKind, Triviality, Visibility,
+        };
+
+        let mut unit_result = Symbol::new(
+            SymbolId::new("src/lib.rs", 1, 0),
+            "c::flush".into(),
+            "flush".into(),
+            SymbolKind::Free,
+            LineSpan { start: 1, end: 3 },
+            Visibility::Public,
+            SelfKind::None,
+            ReturnShape::ResultLike,
+            false,
+            Triviality::Normal,
+        );
+        // `fn flush() -> Result<(), Error>`: nothing for `is_ok` to discard.
+        unit_result.returns_unit_ok = true;
+
+        let inv = Inventory {
+            symbols: vec![unit_result],
+            ..Default::default()
+        };
+
+        let mut results = vec![analyze_src("fn t() { assert!(flush().is_ok()); }")];
+        assert_eq!(
+            results[0].findings.len(),
+            1,
+            "flagged before the inventory is consulted"
+        );
+        assert_eq!(results[0].findings[0].subject.as_deref(), Some("flush"));
+
+        refine_discriminant_findings(&inv, &mut results);
+        assert!(
+            results[0].findings.is_empty(),
+            "a Result<(), E> success case has no payload to leave unchecked"
+        );
+    }
+
+    #[test]
+    fn refinement_keeps_findings_for_calls_it_cannot_resolve() {
+        let inv = Inventory::default();
+        let mut results = vec![analyze_src("fn t() { assert!(parse(s).is_ok()); }")];
+        refine_discriminant_findings(&inv, &mut results);
+        assert_eq!(
+            results[0].findings.len(),
+            1,
+            "an unknown callee must not silently excuse the finding"
+        );
     }
 
     #[test]

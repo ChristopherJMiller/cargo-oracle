@@ -251,6 +251,9 @@ pub struct Symbol {
     pub is_const: bool,
     /// `unsafe fn`.
     pub is_unsafe: bool,
+    /// Returns `Result<(), _>` or `Option<()>`: the success case carries no
+    /// payload, so `is_ok()`/`is_some()` on it observes everything there is.
+    pub returns_unit_ok: bool,
     /// Trait being implemented, when `kind` is `TraitImpl`.
     pub trait_name: Option<String>,
     /// Number of doctests attached to this item's documentation.
@@ -288,6 +291,7 @@ impl Symbol {
             is_async: false,
             is_const: false,
             is_unsafe: false,
+            returns_unit_ok: false,
             trait_name: None,
             doctests: 0,
         }

@@ -67,6 +67,8 @@ impl Report {
     pub fn build(inv: &Inventory) -> Self {
         let claims = ClaimMap::build(inv);
         let mut tests = lint::analyze(inv);
+        // ORC002 needs the callee's return type, which only the inventory has.
+        lint::refine_discriminant_findings(inv, &mut tests);
 
         // ORC010 is computed across the inventory and the claim map, so it is
         // not known when a test is analyzed alone. Fold it back into the

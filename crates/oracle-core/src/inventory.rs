@@ -445,6 +445,7 @@ impl Walker {
         symbol.is_async = sig.asyncness.is_some();
         symbol.is_const = sig.constness.is_some();
         symbol.is_unsafe = sig.unsafety.is_some();
+        symbol.returns_unit_ok = wraps_unit(&sig.output);
 
         // Doctests attach to the item lexically: an exact claim, for free.
         let fences = extract_doctests(attrs);
@@ -761,4 +762,33 @@ fn is_accessor_expr(expr: &syn::Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// Does this return type wrap `()` — `Result<(), E>` or `Option<()>`?
+///
+/// Such a success case carries no payload, so a `is_ok()`/`is_some()` check on
+/// it is a complete oracle rather than a discriminant-only one. `Result<(), E>`
+/// is the shape of most fallible operations in Rust, so treating it as weak
+/// would make ORC002 fire constantly and wrongly.
+fn wraps_unit(output: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    let syn::Type::Path(p) = &**ty else {
+        return false;
+    };
+    let Some(last) = p.path.segments.last() else {
+        return false;
+    };
+    if last.ident != "Result" && last.ident != "Option" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        // `Result<T>` behind a crate alias: the success type is not visible.
+        return false;
+    };
+    matches!(
+        args.args.first(),
+        Some(syn::GenericArgument::Type(syn::Type::Tuple(t))) if t.elems.is_empty()
+    )
 }

@@ -128,28 +128,180 @@ of the workspace unexamined, and an earlier version reported all of it as "no
 mutant exists" — a gap laundered into a reassurance, which is precisely the
 failure that makes coverage numbers untrustworthy.
 
-## Usage
+## Install
+
+Not on crates.io yet, so install from git:
 
 ```sh
-nix develop                       # rustc, cargo-nextest, cargo-llvm-cov, cargo-mutants
-cargo build --release
+cargo install --git https://github.com/ChristopherJMiller/cargo-oracle cargo-oracle
+```
 
-cargo oracle lint                 # static oracle audit (no build, no test run)
-cargo oracle explain ORC010       # what a rule means and how to fix it
-cargo oracle explain              # list every rule
-cargo oracle lint --deny high     # exit 1 on any high-severity finding, for CI
-cargo oracle inventory            # symbols and the oracle shape each requires
-cargo oracle claims               # which tests speak for which symbols
-cargo oracle coverage             # which symbols actually run (builds + runs tests)
-cargo oracle coverage --coverage-json report.json   # reuse an existing report
-cargo oracle attribute            # which test runs which symbol (O(tests), slow)
-cargo oracle attribute --tests parse --dry-run     # scope it first
-cargo oracle verify --since origin/main            # mutate only what the branch changed
-cargo oracle verify --in-diff pr.diff              # or supply the diff yourself
-cargo oracle verify --with-attribution            # adds the per-test verdict
-cargo oracle fastverify --dry-run                 # experimental: one build, N runs
-cargo oracle lint --message-format short   # one line per finding, for editors
-cargo oracle lint --message-format json    # machine-readable, on stdout
+Or run it without installing, if you use nix:
+
+```sh
+nix run github:ChristopherJMiller/cargo-oracle -- lint
+```
+
+## Setup
+
+There isn't one. No config file, no attributes, no changes to your tests —
+cargo-oracle reads the code you already have.
+
+What it relies on instead is the conventional layout, which *is* the
+configuration:
+
+```rust
+// src/config.rs
+#[derive(Debug, Default)]
+pub struct Config {
+    pub host: String,
+    pub retries: u8,
+}
+
+impl Config {
+    /// `&mut self` with no return value, so the result lives in the receiver.
+    /// cargo-oracle reads that off the signature: a test must observe `c`
+    /// after the call or it cannot detect a fault here.
+    pub fn set_retries(&mut self, n: u8) {
+        self.retries = n.min(10);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Living in the same file is what makes this module *claim* the symbols
+    // above. Containment is the claim; nothing needs annotating.
+    #[test]
+    fn set_retries_clamps() {
+        let mut c = Config::default();
+        c.set_retries(99);
+        assert!(true);
+    }
+}
+```
+
+```
+$ cargo oracle lint
+
+warning: nothing observes the receiver this call mutates
+  --> src/config.rs:21:9
+   |
+21 |         c.set_retries(99);
+   |         ^^^^^^^^^^^^^^^^^ demo::config::Config::set_retries
+   |
+   = help: assert on the receiver after the call: `obj.mutate();
+           assert_eq!(obj.field, expected);` -- or compare the whole value if
+           it derives PartialEq.
+   = note: oracle lint `oracle_shape_mismatch` (ORC010)
+
+warning: this assertion cannot fail
+  --> src/config.rs:22:9
+   |
+22 |         assert!(true);
+   |         ^^^^^^^^^^^^^
+   |
+   = help: replace one side with an independently written expected value. If
+           there is nothing to compare against, the test has no subject.
+   = note: oracle lint `tautological_assert` (ORC007)
+
+warning: `demo` generated 2 warnings across 1 of 1 test
+  oracle strength: 0 strong, 0 partial, 0 weak, 1 none
+  1 symbol scorable, all claimed by some test
+```
+
+Replace `assert!(true)` with `assert_eq!(c.retries, 10)` and it goes quiet:
+
+```
+$ cargo oracle lint
+
+ok: `demo`: every test has an oracle that can fail
+  oracle strength: 1 strong, 0 partial, 0 weak, 0 none
+  1 symbol scorable, all claimed by some test
+```
+
+Two conventions carry all the attribution, and both are ones you already
+follow:
+
+- A `#[cfg(test)] mod tests` **in the same file** claims that file's symbols.
+- A **doctest** claims the item it documents.
+
+Name similarity and the public surface reachable from `tests/` are used too,
+but only as explicitly weaker evidence.
+
+### What each command needs
+
+Only the first row is free. Everything below it costs a build, which is why
+`--since` exists.
+
+| Command | Needs | Cost |
+|---|---|---|
+| `lint` `explain` `inventory` `claims` | nothing beyond cargo | milliseconds, no build |
+| `coverage` | `cargo-llvm-cov`, `llvm-tools-preview` | one instrumented build |
+| `attribute` | + `cargo-nextest` | one run per test |
+| `verify` | `cargo-mutants`, `cargo-nextest` | one rebuild per mutant |
+| `fastverify` | `cargo-nextest` | one build, one run per mutant |
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-nextest cargo-llvm-cov cargo-mutants
+```
+
+`nix develop` in a checkout provides all of them.
+
+### In CI
+
+`lint` needs no build, so it is cheap enough to run on every push:
+
+```yaml
+- run: cargo install --git https://github.com/ChristopherJMiller/cargo-oracle cargo-oracle
+- run: cargo oracle lint --deny high
+```
+
+`verify` costs a rebuild per mutant, so scope it to the diff:
+
+```yaml
+- uses: actions/checkout@v4
+  with: { fetch-depth: 0 }
+- run: cargo oracle verify --since origin/${{ github.base_ref }}
+```
+
+A change touching no Rust source reports "nothing to verify" and passes, so a
+docs-only PR is not failed by the gate.
+
+## Commands
+
+```sh
+# Static, no build required
+cargo oracle lint                       # audit test oracles
+cargo oracle lint --deny high           # exit 1 on a high-severity finding
+cargo oracle explain ORC010             # what a rule means and how to fix it
+cargo oracle explain                    # list every rule
+cargo oracle inventory                  # symbols, and the oracle each requires
+cargo oracle claims                     # which tests speak for which symbols
+
+# Execution: needs a build
+cargo oracle coverage                   # which symbols actually run
+cargo oracle coverage --coverage-json report.json     # reuse an existing report
+cargo oracle attribute --dry-run        # what a per-test run would profile
+cargo oracle attribute --tests parse    # which test runs which symbol
+
+# Verification: needs a rebuild per mutant
+cargo oracle verify --since origin/main # mutate only what the branch changed
+cargo oracle verify --in-diff pr.diff   # or supply the diff yourself
+cargo oracle verify --with-attribution  # adds the per-test executes/verifies verdict
+cargo oracle fastverify --dry-run       # experimental: one build, N runs
+```
+
+Output follows cargo's conventions throughout:
+
+```sh
+--message-format human   # rustc-style diagnostics (default), on stderr
+--message-format short   # file:line:col: warning: message [CODE], for editors
+--message-format json    # machine-readable, on stdout
+--color auto|always|never   # honours NO_COLOR under `auto`
+-v                       # every test, and why each rule matters
 ```
 
 ## Status
@@ -185,6 +337,9 @@ breaking the whole build -- and for its limitations, which are real.
 its own:
 
 ```sh
+git clone https://github.com/ChristopherJMiller/cargo-oracle
+cd cargo-oracle
+
 cargo doc -p oracle-core --open
 cargo run --example static_audit -- path/to/crate   # v0, no build required
 cargo run --example verdicts -- . mutants.out       # read an existing run

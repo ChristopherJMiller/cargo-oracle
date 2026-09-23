@@ -71,8 +71,19 @@ fn test_validate() {
 
 ## ORC002 `discriminant_only`
 
-`is_ok()` / `is_err()` / `is_some()` / `is_none()` check the discriminant and
-discard the payload. A function returning `Ok(garbage)` passes.
+`is_ok()` / `is_err()` / `is_some()` check the discriminant and discard the
+payload. A function returning `Ok(garbage)` passes.
+
+Two cases are deliberately **not** flagged, both found by running this lint
+over its own test suite:
+
+- **`is_none()`.** `None` carries no payload, so asserting it fully specifies
+  the value. The other three leave something unexamined; this one does not.
+- **A subject returning `Result<(), E>` or `Option<()>`.** There is no payload
+  for the check to have discarded. The lint cannot see that from the call site
+  alone, so a later pass consults the inventory for the callee's return type.
+  `Result<(), E>` is the shape of most fallible operations in Rust, so without
+  this the rule fires constantly and wrongly.
 
 ```rust
 assert!(parse("h:1").is_ok());          // flagged
@@ -150,6 +161,10 @@ assert_eq!(got, Config::default());       // fine: a written-down expectation
 
 Constructors (`new`, `default`, `from`, `clone`, ...) are excluded, since
 comparing against a known starting point is legitimate.
+
+`assert_ne!` is excluded entirely. `assert_ne!(f(a), f(b))` asserts that `f`
+*distinguishes* its inputs, which is a property worth testing -- calling the
+same function on both sides is the point there, not a smell.
 
 ## ORC010 `oracle_shape_mismatch`
 
